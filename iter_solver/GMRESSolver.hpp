@@ -56,6 +56,13 @@ void GMRESSolver<idx_t, pc_data_t, pc_calc_t, ksp_t>::Mult(const par_structVecto
         r.global_size_x/r.local_vector->local_x,
         r.global_size_y/r.local_vector->local_y,
         r.global_size_z/r.local_vector->local_z, num_diag != 7);
+    // 需要把非规则点也一起初始化了
+    if (b.num_irrgPts > 0) {
+        pc_buf_b->num_irrgPts = b.num_irrgPts;
+        pc_buf_b->irrgPts = new irrgPts_vec<idx_t, pc_calc_t> [b.num_irrgPts];
+        for (idx_t ir = 0; ir < b.num_irrgPts; ir++)
+            pc_buf_b->irrgPts[ir].gid = b.irrgPts[ir].gid;// 必须要初始化非规则点的序号
+    }
     pc_buf_x = new par_structVector<idx_t, pc_calc_t>(*pc_buf_b);
     pc_buf_b->set_halo(0.0);
     pc_buf_x->set_halo(0.0);
@@ -153,6 +160,15 @@ void GMRESSolver<idx_t, pc_data_t, pc_calc_t, ksp_t>::Mult(const par_structVecto
                         for (idx_t k = 0; k < tot_len; k++)
                             dst_ptr[k] = src_ptr[k];
                     }
+                    // 以及非规则点
+                    assert(pc_buf_b->num_irrgPts == p[i-1].num_irrgPts);
+                    const idx_t num_irr = p[i-1].num_irrgPts;
+                    for (idx_t ir = 0; ir < num_irr; ir++) {
+                        assert(pc_buf_b->irrgPts[ir].gid == p[i-1].irrgPts[ir].gid);
+                        #pragma GCC unroll (4)
+                        for (idx_t f = 0; f < NUM_DOF; f++)
+                            pc_buf_b->irrgPts[ir].val[f] =  p[i-1].irrgPts[ir].val[f];
+                    }
                 }
                 
                 pc_buf_x->set_val(0.0);
@@ -171,6 +187,15 @@ void GMRESSolver<idx_t, pc_data_t, pc_calc_t, ksp_t>::Mult(const par_structVecto
                         const idx_t tot_len = col_height * NUM_DOF;
                         for (idx_t k = 0; k < tot_len; k++)
                             dst_ptr[k] = src_ptr[k];
+                    }
+                    // 以及非规则点
+                    assert(pc_buf_x->num_irrgPts == r.num_irrgPts);
+                    const idx_t num_irr = r.num_irrgPts;
+                    for (idx_t ir = 0; ir < num_irr; ir++) {
+                        assert(pc_buf_x->irrgPts[ir].gid == r.irrgPts[ir].gid);
+                        #pragma GCC unroll (4)
+                        for (idx_t f = 0; f < NUM_DOF; f++)
+                            r.irrgPts[ir].val[f] = pc_buf_x->irrgPts[ir].val[f];
                     }
                 }
 #else
@@ -255,6 +280,14 @@ void GMRESSolver<idx_t, pc_data_t, pc_calc_t, ksp_t>::Mult(const par_structVecto
                     for (idx_t k = 0; k < tot_len; k++)
                         dst_ptr[k] = src_ptr[k];
                 }
+                // 以及非规则点
+                const idx_t num_irr = w.num_irrgPts;
+                for (idx_t ir = 0; ir < num_irr; ir++) {
+                    assert(pc_buf_b->irrgPts[ir].gid == w.irrgPts[ir].gid);
+                    #pragma GCC unroll (4)
+                    for (idx_t f = 0; f < NUM_DOF; f++)
+                        pc_buf_b->irrgPts[ir].val[f] =  w.irrgPts[ir].val[f];
+                }
             }
             pc_buf_x->set_val(0.0);
             record[PREC] -= wall_time();
@@ -272,6 +305,15 @@ void GMRESSolver<idx_t, pc_data_t, pc_calc_t, ksp_t>::Mult(const par_structVecto
                     const idx_t tot_len = col_height * NUM_DOF;
                     for (idx_t k = 0; k < tot_len; k++)
                         dst_ptr[k] = src_ptr[k];
+                }
+                // 以及非规则点
+                assert(pc_buf_x->num_irrgPts == r.num_irrgPts);
+                const idx_t num_irr = r.num_irrgPts;
+                for (idx_t ir = 0; ir < num_irr; ir++) {
+                    assert(pc_buf_x->irrgPts[ir].gid == r.irrgPts[ir].gid);
+                    #pragma GCC unroll (4)
+                    for (idx_t f = 0; f < NUM_DOF; f++)
+                        r.irrgPts[ir].val[f] = pc_buf_x->irrgPts[ir].val[f];
                 }
             }
 #else

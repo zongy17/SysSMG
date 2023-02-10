@@ -5,11 +5,11 @@
 
 template<typename idx_t, typename data_t, int dof=NUM_DOF>
 class Interpolator {
-private:
+public:
     // 插值算子不需要根据方程是否为标准化形式而改变
     const PROLONG_TYPE type;
     data_t a0, a1, a2, a3;
-public:
+
     Interpolator(PROLONG_TYPE type): type(type) { 
         setup_weights();
     }

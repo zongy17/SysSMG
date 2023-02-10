@@ -5,10 +5,10 @@
 
 template<typename idx_t, typename data_t, int dof=NUM_DOF>
 class Restrictor {
-protected:
+public:
     data_t a0, a1, a2, a3;
     const RESTRICT_TYPE type;
-public:
+
     Restrictor(RESTRICT_TYPE type): type(type)  { 
         setup_weights();
     }

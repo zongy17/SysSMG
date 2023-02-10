@@ -30,7 +30,7 @@ template<typename idx_t, typename data_t, typename setup_t, typename calc_t>
 class Solver : public Operator<idx_t, data_t, calc_t> {
 public:
     mutable bool zero_guess = false;// 初始解是否为0
-    mutable data_t weight = 1.12;
+    mutable data_t weight = 1.0;// 油藏模拟的算例用1.0
 
     explicit Solver(idx_t s = 0, bool use_zero_guess = false) : Operator<idx_t, data_t, calc_t>(s) {zero_guess = use_zero_guess;} 
 

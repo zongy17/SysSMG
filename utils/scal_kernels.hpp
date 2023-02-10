@@ -826,4 +826,124 @@ void AOS_compress_point_backward_ALL_3d_scaled_normal(const idx_t num,
     }
 }
 
+//  - - - - - - - - - - - - - - - 非规则的函数
+
+template<typename idx_t, typename data_t, typename calc_t, int dof, int num_L_diag>
+void AOS_point_forward_zero_3d_normal_irr(const idx_t num,
+    const idx_t vec_dk_size, const idx_t vec_dki_size, const calc_t wgt,
+    const data_t * L_jik, const data_t * dummy0, const data_t * invD_jik,
+    const calc_t * b_jik, calc_t * x_jik, const calc_t * dummy1,
+    const idx_t irr_k, const calc_t* irr_contrib)
+{
+    constexpr idx_t elms = dof*dof;
+    const calc_t * xa[num_L_diag];
+    pgsf_prepare_xa;
+    calc_t tmp[dof];
+    for (idx_t k = 0; k < num; k++) {
+        #pragma GCC unroll (4)
+        for (idx_t f = 0; f < dof; f++)
+            tmp[f] = - b_jik[f];
+        for (idx_t d = 0; d < num_L_diag; d++) {
+            matvec_mla<idx_t, data_t, calc_t, dof>(L_jik + d*elms, xa[d], tmp);
+            xa[d] += dof;
+        }
+        if (k == irr_k) {// 该层上有非规则的贡献
+            #pragma GCC unroll (4)
+            for (idx_t f = 0; f < dof; f++)
+                tmp[f] += irr_contrib[f];
+        }
+        matvec_mul<idx_t, data_t, calc_t, dof>(invD_jik, tmp, x_jik, - wgt);
+
+        x_jik += dof; b_jik += dof;
+        L_jik += num_L_diag * elms;
+        invD_jik += elms;
+    }
+}
+
+template<typename idx_t, typename data_t, typename calc_t, int dof, int num_L_diag, int num_U_diag>
+void AOS_point_forward_ALL_3d_normal_irr(const idx_t num,
+    const idx_t vec_dk_size, const idx_t vec_dki_size, const calc_t wgt,
+    const data_t * L_jik, const data_t * U_jik, const data_t * invD_jik,
+    const calc_t * b_jik, calc_t * x_jik, const calc_t * dummy1,
+    const idx_t irr_k, const calc_t* irr_contrib)
+{
+    constexpr int elms = dof*dof;
+    const calc_t * xa[num_L_diag + 1 + num_U_diag];
+    static_assert(num_L_diag == num_U_diag);
+    pgsAll_prepare_xa;
+    const calc_t one_minus_weight = 1.0 - wgt;
+    calc_t tmp[dof], tmp2[dof];
+    for (idx_t k = 0; k < num; k++) {
+        #pragma GCC unroll (4)
+        for (idx_t f = 0; f < dof; f++)
+            tmp[f] = - b_jik[f];
+
+        for (idx_t d = 0; d < num_L_diag; d++) {
+            matvec_mla<idx_t, data_t, calc_t, dof>(L_jik + d*elms, xa[d], tmp);
+            xa[d] += dof;
+        }
+        for (idx_t d = num_L_diag + 1; d < num_L_diag + 1 + num_U_diag; d++) {
+            const idx_t p = d - num_L_diag - 1;
+            matvec_mla<idx_t, data_t, calc_t, dof>(U_jik + p*elms, xa[d], tmp);
+            xa[d] += dof;
+        }
+        if (k == irr_k) {
+            #pragma GCC unroll (4)
+            for (idx_t f = 0; f < dof; f++)
+                tmp[f] += irr_contrib[f];
+        }
+        matvec_mul<idx_t, data_t, calc_t, dof>(invD_jik, tmp, tmp2, - wgt);
+        #pragma GCC unroll (4)
+        for (idx_t f = 0; f < dof; f++)
+            x_jik[f] = one_minus_weight * x_jik[f] + tmp2[f];
+
+        x_jik += dof; b_jik += dof;
+        L_jik += num_L_diag * elms; U_jik += num_U_diag * elms;
+        invD_jik += elms;
+    }
+}
+
+template<typename idx_t, typename data_t, typename calc_t, int dof, int num_L_diag, int num_U_diag>
+void AOS_point_backward_ALL_3d_normal_irr(const idx_t num,
+    const idx_t vec_dk_size, const idx_t vec_dki_size, const calc_t wgt,
+    const data_t * L_jik, const data_t * U_jik, const data_t * invD_jik,
+    const calc_t * b_jik, calc_t * x_jik, const calc_t * dummy1,
+    const idx_t irr_k, const calc_t* irr_contrib) 
+{
+    constexpr int elms = dof*dof;
+    const calc_t * xa[num_L_diag + 1 + num_U_diag];
+    static_assert(num_L_diag == num_U_diag);
+    pgsAll_prepare_xa;
+    const calc_t one_minus_weight = 1.0 - wgt;
+    calc_t tmp[dof], tmp2[dof];
+    for (idx_t k = 0; k < num; k++) {
+        b_jik -= dof; x_jik -= dof;
+        L_jik -= num_L_diag * elms; U_jik -= num_U_diag * elms;
+        invD_jik -= elms;
+
+        #pragma GCC unroll (4)
+        for (idx_t f = 0; f < dof; f++)
+            tmp[f] = - b_jik[f];
+
+        for (idx_t d = 0; d < num_L_diag; d++) {
+            xa[d] -= dof;
+            matvec_mla<idx_t, data_t, calc_t, dof>(L_jik + d*elms, xa[d], tmp);
+        }
+        for (idx_t d = num_L_diag + 1; d < num_L_diag + 1 + num_U_diag; d++) {
+            xa[d] -= dof;
+            const idx_t p = d - num_L_diag - 1;
+            matvec_mla<idx_t, data_t, calc_t, dof>(U_jik + p*elms, xa[d], tmp);
+        }
+        if (k == num - 1 - irr_k) {
+            #pragma GCC unroll (4)
+            for (idx_t f = 0; f < dof; f++)
+                tmp[f] += irr_contrib[f];
+        }
+        matvec_mul<idx_t, data_t, calc_t, dof>(invD_jik, tmp, tmp2, - wgt);
+        #pragma GCC unroll (4)
+        for (idx_t f = 0; f < dof; f++)
+            x_jik[f] = one_minus_weight * x_jik[f] + tmp2[f];
+    }
+}
+
 #endif

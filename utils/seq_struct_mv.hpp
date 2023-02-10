@@ -387,28 +387,8 @@ seq_structMatrix<idx_t, data_t, calc_t, dof>::seq_structMatrix(idx_t num_d, idx_
     case  7:
         if constexpr (sizeof(data_t) == 2 && sizeof(calc_t) == 4) {
             spmv        = AOS_spmv_3d_Cal32Stg16<dof, 7>;
-            spmv_scaled = AOS_spmv_3d_scaled_Cal32Stg16<dof, 7>;
         } else {
             spmv        = AOS_spmv_3d_normal<idx_t, data_t, calc_t, dof, 7>;
-            spmv_scaled = AOS_spmv_3d_scaled_normal<idx_t, data_t, calc_t, dof, 7>;
-        }
-        break;
-    case 15:
-        if constexpr (sizeof(data_t) == 2 && sizeof(calc_t) == 4) {
-            spmv        = AOS_spmv_3d_Cal32Stg16<dof, 15>;
-            spmv_scaled = AOS_spmv_3d_scaled_Cal32Stg16<dof, 15>;
-        } else {
-            spmv        = AOS_spmv_3d_normal<idx_t, data_t, calc_t, dof, 15>;
-            spmv_scaled = AOS_spmv_3d_scaled_normal<idx_t, data_t, calc_t, dof, 15>;
-        }
-        break;
-    case 27:
-        if constexpr (sizeof(data_t) == 2 && sizeof(calc_t) == 4) {
-            spmv        = AOS_spmv_3d_Cal32Stg16<dof, 27>;
-            spmv_scaled = AOS_spmv_3d_scaled_Cal32Stg16<dof, 27>;
-        } else {
-            spmv        = AOS_spmv_3d_normal<idx_t, data_t, calc_t, dof, 27>;
-            spmv_scaled = AOS_spmv_3d_scaled_normal<idx_t, data_t, calc_t, dof, 27>;
         }
         break;
     default: break;

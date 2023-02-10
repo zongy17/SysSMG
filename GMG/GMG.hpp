@@ -208,8 +208,16 @@ void GeometricMultiGrid<idx_t, data_t, setup_t, calc_t, dof>::Setup(const par_st
                 gmg_mat.data[i] = out_mat.data[i];
             if (A_problem.LU_compressed)
                 A_array_high[0]->compress_LU();
+            A_array_high[0]->copy_irrgPts(A_problem);// 拷贝非规则点部分
         }
         U_array[0] = new par_structVector<idx_t, calc_t, dof>(comm, gx, gy, gz, num_procs[1], num_procs[0], num_procs[2], A_problem.num_diag != 7);
+
+        idx_t irrgPts_gids[A_array_high[0]->num_irrgPts];
+        for (idx_t ir = 0; ir < A_array_high[0]->num_irrgPts; ir++)
+            irrgPts_gids[ir] = A_array_high[0]->irrgPts[ir].gid;
+        U_array[0]->init_irrgPts(A_array_high[0]->num_irrgPts, irrgPts_gids);
+        // printf("proc %d GMG U0 has %d irr\n", my_pid, U_array[0]->num_irrgPts);
+
         F_array[0] = new par_structVector<idx_t, calc_t, dof>(*U_array[0]);
         aux_arr[0] = new par_structVector<idx_t, calc_t, dof>(*F_array[0]);
 
@@ -221,6 +229,29 @@ void GeometricMultiGrid<idx_t, data_t, setup_t, calc_t, dof>::Setup(const par_st
     }
     // 再读入或构建各层粗网格
     for (idx_t ilev = 1; ilev < num_levs; ilev++) {
+        // 建立层间转移的限制和插值算子，并逐层使用Galerkin方法生成粗层算子
+        switch (restrict_types[ilev - 1])
+        {
+        case Rst_4cell : if (my_pid == 0) printf("  using  4-cell restriction of %d-th to %d-th lev\n", ilev-1, ilev); break;
+        case Rst_8cell : if (my_pid == 0) printf("  using  8-cell restriction of %d-th to %d-th lev\n", ilev-1, ilev); break;
+        case Rst_64cell: if (my_pid == 0) printf("  using 64-cell restriction of %d-th to %d-th lev\n", ilev-1, ilev); break;
+        default:
+            if (my_pid == 0) printf("Error while setting restrictor: INVALID restrict type of %d\n", restrict_types[ilev - 1]);
+            MPI_Abort(MPI_COMM_WORLD, -201);
+        }
+        R_ops[ilev - 1] = new Restrictor<idx_t, calc_t, dof>(restrict_types[ilev - 1]);// 注意Galerkin方法所用的限制算子
+
+        switch (prolong_types[ilev - 1])
+        {
+        case Plg_linear_4cell : if (my_pid == 0) printf("  using  4-cell linear interpolation of %d-th to %d-th lev\n", ilev-1, ilev); break;
+        case Plg_linear_8cell : if (my_pid == 0) printf("  using  8-cell linear interpolation of %d-th to %d-th lev\n", ilev-1, ilev); break;
+        case Plg_linear_64cell: if (my_pid == 0) printf("  using 64-cell linear interpolation of %d-th to %d-th lev\n", ilev-1, ilev); break;
+        default:
+            if (my_pid == 0) printf("Error while setting interpolator: INVALID prolong type of %d\n", prolong_types[ilev - 1]);
+            MPI_Abort(MPI_COMM_WORLD, -202);
+        }
+        P_ops[ilev - 1] = new Interpolator<idx_t, calc_t, dof>(prolong_types[ilev - 1]);
+
         // printf("proc %d constructing %d-th lev\n", my_pid, ilev);
         idx_t gx, gy, gz;
         gx = A_array_high[ilev - 1]->local_matrix->local_x * num_procs[1]; // global_size_x
@@ -245,38 +276,21 @@ void GeometricMultiGrid<idx_t, data_t, setup_t, calc_t, dof>::Setup(const par_st
         idx_t new_gy = gy / coar_to_fine_maps[ilev - 1].stride[1];
         idx_t new_gz = gz / coar_to_fine_maps[ilev - 1].stride[2];
 
-        A_array_high[ilev] = Galerkin_RAP_3d(restrict_types[ilev - 1], *A_array_high[ilev - 1], prolong_types[ilev - 1], 
+        A_array_high[ilev] = Galerkin_RAP_3d(*R_ops[ilev - 1], *A_array_high[ilev - 1], *P_ops[ilev - 1], 
             coar_to_fine_maps[ilev - 1]);
         assert(A_array_high[ilev]->input_dim[0] == new_gx && A_array_high[ilev]->input_dim[1] == new_gy
             && A_array_high[ilev]->input_dim[2] == new_gz );
 
         U_array     [ilev] = new par_structVector<idx_t,         calc_t>
             (comm,     new_gx, new_gy, new_gz, num_procs[1], num_procs[0], num_procs[2], A_array_high[ilev]->num_diag != 7);
+        // 根据粗化完的矩阵确定非规则点数目
+        idx_t irrgPts_gids[A_array_high[ilev]->num_irrgPts];
+        for (idx_t ir = 0; ir < A_array_high[ilev]->num_irrgPts; ir++)
+            irrgPts_gids[ir] = A_array_high[ilev]->irrgPts[ir].gid;
+        U_array[ilev]->init_irrgPts(A_array_high[ilev]->num_irrgPts, irrgPts_gids);
+
         F_array[ilev] = new par_structVector<idx_t, calc_t, dof>(*U_array[ilev]);
         aux_arr[ilev] = new par_structVector<idx_t, calc_t, dof>(*U_array[ilev]);
-
-        // 建立层间转移的限制和插值算子，并逐层使用Galerkin方法生成粗层算子
-        switch (restrict_types[ilev - 1])
-        {
-        case Rst_4cell : if (my_pid == 0) printf("  using  4-cell restriction of %d-th to %d-th lev\n", ilev-1, ilev); break;
-        case Rst_8cell : if (my_pid == 0) printf("  using  8-cell restriction of %d-th to %d-th lev\n", ilev-1, ilev); break;
-        case Rst_64cell: if (my_pid == 0) printf("  using 64-cell restriction of %d-th to %d-th lev\n", ilev-1, ilev); break;
-        default:
-            if (my_pid == 0) printf("Error while setting restrictor: INVALID restrict type of %d\n", restrict_types[ilev - 1]);
-            MPI_Abort(MPI_COMM_WORLD, -201);
-        }
-        R_ops[ilev - 1] = new Restrictor<idx_t, calc_t, dof>(restrict_types[ilev - 1]);// 注意Galerkin方法所用的限制算子
-
-        switch (prolong_types[ilev - 1])
-        {
-        case Plg_linear_4cell : if (my_pid == 0) printf("  using  4-cell linear interpolation of %d-th to %d-th lev\n", ilev-1, ilev); break;
-        case Plg_linear_8cell : if (my_pid == 0) printf("  using  8-cell linear interpolation of %d-th to %d-th lev\n", ilev-1, ilev); break;
-        case Plg_linear_64cell: if (my_pid == 0) printf("  using 64-cell linear interpolation of %d-th to %d-th lev\n", ilev-1, ilev); break;
-        default:
-            if (my_pid == 0) printf("Error while setting interpolator: INVALID prolong type of %d\n", prolong_types[ilev - 1]);
-            MPI_Abort(MPI_COMM_WORLD, -202);
-        }
-        P_ops[ilev - 1] = new Interpolator<idx_t, calc_t, dof>(prolong_types[ilev - 1]);
 
         if (my_pid == 0) {
             printf("  lev #%d : global %4d x %4d x %4d local %3d x %3d x %3d\n", ilev, 
@@ -339,6 +353,23 @@ void GeometricMultiGrid<idx_t, data_t, setup_t, calc_t, dof>::Setup(const par_st
                     A_array_low[i]->own_sqrt_D = true;
                 }
             // }
+            // 拷贝非规则点
+            if (A_array_high[i]->num_irrgPts > 0) {
+                const idx_t num_irrgPts = A_array_high[i]->num_irrgPts;
+                A_array_low[i]->num_irrgPts = num_irrgPts;
+                A_array_low[i]->irrgPts = new irrgPts_mat<idx_t> [num_irrgPts];
+                for (idx_t ir = 0; ir < num_irrgPts; ir++) 
+                    A_array_low[i]->irrgPts[ir] = A_array_high[i]->irrgPts[ir];
+
+                const int tot_nnz = A_array_low[i]->irrgPts[num_irrgPts-1].beg + A_array_low[i]->irrgPts[num_irrgPts-1].nnz;
+                A_array_low[i]->irrgPts_ngb_ijk = new idx_t [tot_nnz * 3];// i j k
+                for (idx_t j = 0; j < tot_nnz * 3; j++)
+                    A_array_low[i]->irrgPts_ngb_ijk[j] = A_array_high[i]->irrgPts_ngb_ijk[j];
+
+                A_array_low[i]->irrgPts_A_vals = new data_t [tot_nnz * 2 * dof*dof];// two-sided effect
+                for (int j = 0; j < tot_nnz * 2 * dof*dof; j++)
+                    A_array_low[i]->irrgPts_A_vals[j] = A_array_high[i]->irrgPts_A_vals[j];
+            }
         }
     }
     
@@ -351,18 +382,18 @@ void GeometricMultiGrid<idx_t, data_t, setup_t, calc_t, dof>::Setup(const par_st
                 smoother[i]->SetOperator(*A_array_high[i]);
                 // delete A_array_high[i]; A_array_high[i] = nullptr;
             }
-            else if (relax_types[i] == GaussElim) {
-                DenseLU_type type;
-                if      (A_array_high[i]->num_diag ==  7) type = DenseLU_3D7;
-                else if (A_array_high[i]->num_diag == 27) type = DenseLU_3D27;
-                else assert(false);
-                if (my_pid == 0) printf("  using \033[1;35mdense-LU type %d\033[0m as smoother of %d-th lev\n", type, i);
-                smoother[i] = new DenseLU<idx_t, data_t, setup_t, calc_t, dof>(type);
-                t += wall_time();// LU分解的时间单独算
-                smoother[i]->SetOperator(*A_array_high[i]);
-                t += ((DenseLU<idx_t, data_t, setup_t, calc_t, dof>*)smoother[i])->setup_time;
-                t -= wall_time();
-            }
+            // else if (relax_types[i] == GaussElim) {
+            //     DenseLU_type type;
+            //     if      (A_array_high[i]->num_diag ==  7) type = DenseLU_3D7;
+            //     else if (A_array_high[i]->num_diag == 27) type = DenseLU_3D27;
+            //     else assert(false);
+            //     if (my_pid == 0) printf("  using \033[1;35mdense-LU type %d\033[0m as smoother of %d-th lev\n", type, i);
+            //     smoother[i] = new DenseLU<idx_t, data_t, setup_t, calc_t, dof>(type);
+            //     t += wall_time();// LU分解的时间单独算
+            //     smoother[i]->SetOperator(*A_array_high[i]);
+            //     t += ((DenseLU<idx_t, data_t, setup_t, calc_t, dof>*)smoother[i])->setup_time;
+            //     t -= wall_time();
+            // }
             else {
                 if (my_pid == 0) printf("Error while setting smoother: INVALID relax type of %d\n", relax_types[i]);
                 MPI_Abort(MPI_COMM_WORLD, -200);

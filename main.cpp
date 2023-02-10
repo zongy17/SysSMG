@@ -39,7 +39,13 @@ int main(int argc, char ** argv)
             assert(sizeof(KSP_TYPE) == 8);
             assert(NUM_DOF == 3);
             num_diag = 15;
-        } else if (strstr(case_name.c_str(), "DEMO")) {
+        } 
+        else if (strcmp(case_name.c_str(), "OIL") == 0) {
+            assert(sizeof(KSP_TYPE) == 8);
+            assert(NUM_DOF == 4);
+            num_diag = 7;
+        }
+        else if (strstr(case_name.c_str(), "DEMO")) {
             if      (strstr(case_name.c_str(), "07"))
                 num_diag = 7;
             else if (strstr(case_name.c_str(), "15"))
@@ -57,20 +63,16 @@ int main(int argc, char ** argv)
         Solver         <IDX_TYPE, PC_DATA_TYPE, KSP_TYPE, PC_CALC_TYPE> * precond = nullptr;
         std::string data_path = "/storage/hpcauser/zongyi/HUAWEI/SysSMG/data";
 
-        x = new par_structVector<IDX_TYPE, KSP_TYPE          >
+        b = new par_structVector<IDX_TYPE, KSP_TYPE          >
                 (MPI_COMM_WORLD,      case_idx, case_idy, case_idz, num_proc_x, num_proc_y, num_proc_z, num_diag!=7);
         A = new par_structMatrix<IDX_TYPE, KSP_TYPE, KSP_TYPE>
                 (MPI_COMM_WORLD,  num_diag, case_idx, case_idy, case_idz, num_proc_x, num_proc_y, num_proc_z);
-        y = new par_structVector<IDX_TYPE, KSP_TYPE>(*x);
-        b = new par_structVector<IDX_TYPE, KSP_TYPE>(*x);
 
         pathname = data_path + "/" + case_name + 
             "/" + std::to_string(case_idx) + "x" + std::to_string(case_idy) + "x" + std::to_string(case_idz);
         if (my_pid == 0) printf("%s\n", pathname.c_str());
 
-        x->set_val(0.0, true);// 迪利克雷边界条件
         b->set_val(0.0, true);
-        y->set_val(0.0, true);
         A->set_val(0.0, true);
 
         if (strstr(case_name.c_str(), "DEMO")) {
@@ -113,7 +115,17 @@ int main(int argc, char ** argv)
         } else {
             b->read_data(pathname, "array_b");
             A->read_data(pathname);
+            if (strcmp(case_name.c_str(), "OIL") == 0) {// 油藏的算例还需要读入非规则点的数据
+                A->init_irrPts(pathname);
+                IDX_TYPE my_irrgPts_gid[A->num_irrgPts];
+                for (IDX_TYPE i = 0; i < A->num_irrgPts; i++)// collect global idx of irrgPts who lie in my domain
+                    my_irrgPts_gid[i] = A->irrgPts[i].gid;
+                b->init_irrgPts(A->num_irrgPts, my_irrgPts_gid, (pathname + "/irgP_b").c_str());
+            }
         }
+        // 读完非规则点之后，另外两个向量再构造
+        y = new par_structVector<IDX_TYPE, KSP_TYPE>(*b); y->set_val(0.0, true);
+        x = new par_structVector<IDX_TYPE, KSP_TYPE>(*b); x->set_val(0.0, true);// 迪利克雷边界条件
 
         double fine_dot;
         // x->read_data(pathname, "array_x_exact.8");
@@ -190,9 +202,7 @@ int main(int argc, char ** argv)
             if (my_pid == 0) printf("NO preconditioner was set.\n");
         }
 
-        if (its_name == "CG") {
-            solver = new CGSolver<IDX_TYPE, PC_DATA_TYPE, PC_CALC_TYPE, KSP_TYPE>();
-        } else if (its_name == "GMRES") {
+        if (its_name == "GMRES") {
             solver = new GMRESSolver<IDX_TYPE, PC_DATA_TYPE, PC_CALC_TYPE, KSP_TYPE>();
             ((GMRESSolver<IDX_TYPE, PC_DATA_TYPE, PC_CALC_TYPE, KSP_TYPE>*)solver)->SetRestartlen(restart);
         } else {
@@ -208,6 +218,10 @@ int main(int argc, char ** argv)
             if (prc_name == "GMG") {
                 ((GeometricMultiGrid<IDX_TYPE, PC_DATA_TYPE, KSP_TYPE, PC_CALC_TYPE>*)precond)->scale_before_setup_smoothers = true;
             }
+        }
+        else if (strcmp(case_name.c_str(), "OIL" ) == 0) {
+            assert(num_diag == 7);
+            solver->SetRelTol(1e-4);
         }
         if (precond != nullptr)
             solver->SetPreconditioner(*precond);
@@ -341,6 +355,31 @@ int main(int argc, char ** argv)
         b_norm = sqrt(b_norm);
          if (my_pid == 0) printf("\033[1;35mtrue ||r|| = %20.16e ||r||/||b||= %20.16e\033[0m\n", 
             true_r_norm, true_r_norm / b_norm);
+        
+        {// 与真解比较
+            IDX_TYPE my_irrgPts_gid[A->num_irrgPts];
+            for (IDX_TYPE i = 0; i < A->num_irrgPts; i++)// collect global idx of irrgPts who lie in my domain
+                my_irrgPts_gid[i] = A->irrgPts[i].gid;
+
+            y->read_data(pathname, "array_x_exact");
+            y->init_irrgPts(A->num_irrgPts, my_irrgPts_gid, (pathname + "/irgP_x_exact").c_str());
+
+            vec_add(*x, -1.0, *y, *b);
+            double err_norm = vec_dot<IDX_TYPE, KSP_TYPE, double>(*b, *b);
+            err_norm = sqrt(err_norm);
+            double sol_norm = vec_dot<IDX_TYPE, KSP_TYPE, double>(*y, *y);
+            sol_norm = sqrt(sol_norm);
+            if (my_pid == 0) printf("\033[1;35mtrue ||e|| = %20.16e ||e||/||x|| = %20.16e\033[0m\n", err_norm, err_norm / sol_norm);
+            
+            MPI_Barrier(MPI_COMM_WORLD);
+            if (x->num_irrgPts > 0) {
+                for (int ir = 0; ir < x->num_irrgPts; ir++) {
+                    printf(" proc %d pt%d idx %d x %.7e %.7e %.7e %.7e\n", 
+                        my_pid, ir, x->irrgPts[ir].gid, x->irrgPts[ir].val[0], x->irrgPts[ir].val[1],
+                                                        x->irrgPts[ir].val[2], x->irrgPts[ir].val[3]);
+                }
+            }
+        }
 
         if (b != nullptr) {delete b; b = nullptr;}
         if (x != nullptr) {delete x; x = nullptr;}

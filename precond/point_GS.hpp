@@ -4,6 +4,39 @@
 #include "precond.hpp"
 #include "../utils/par_struct_mat.hpp"
 
+template<typename idx_t, typename data_t, typename setup_t, int dof=NUM_DOF>
+struct IrrgPts_Effect
+{
+    idx_t loc_id;// local idx to access irrgPts_vec array
+    idx_t i, j, k;// 该非规则点所影响的结构点的三维全局坐标
+    data_t val[dof*dof];// 影响的值
+    IrrgPts_Effect() {}
+    IrrgPts_Effect(idx_t ir, idx_t i, idx_t j, idx_t k, const setup_t* v)
+        : loc_id(ir), i(i), j(j), k(k) {
+        for (idx_t f = 0; f < dof*dof; f++)
+            val[f] = v[f];// deep copy
+    }
+    bool operator < (const IrrgPts_Effect & b) const {
+        if (j < b.j) return true;
+        else if (j > b.j) return false;
+        else {// j == b.j
+            if (i < b.i) return true;
+            else if (i > b.i) return false;
+            else {// i == b.i
+                assert(k != b.k);
+                return k < b.k;
+            }
+        }
+    }
+};
+
+template<typename idx_t, typename data_t, int dof=NUM_DOF>
+struct IrrgPts_InvMat
+{
+    idx_t gid;// 非规则点的全局索引
+    data_t val[dof*dof];
+};
+
 template<typename idx_t, typename data_t, typename setup_t, typename calc_t, int dof=NUM_DOF>
 class PointGS : public Solver<idx_t, data_t, setup_t, calc_t> {
 public:
@@ -24,6 +57,13 @@ public:
 
     seq_structVector<idx_t, calc_t, dof> * sqrt_D = nullptr;
 
+    idx_t num_irrgPts_invD = 0;
+    IrrgPts_InvMat<idx_t, data_t, dof> * irrgPts_invD = nullptr;
+    // 将A矩阵内的非规则点对结构点的影响提取出来，并按照自然序排序，以便在做结构点
+    void prepare_irrgPts();
+    idx_t num_irrgPts_effect = 0;
+    IrrgPts_Effect<idx_t, data_t, setup_t, dof> * irrg_to_Struct = nullptr;// 局部非规则点的一维序号，对应结构点的三维坐标（已带偏移），本结构点受非结构点的影响
+
     void (*AOS_forward_zero)
         (const idx_t, const idx_t, const idx_t, const calc_t, const data_t*, const data_t*, const data_t*, const calc_t*, calc_t*, const calc_t*) = nullptr;
     void (*AOS_forward_ALL)
@@ -32,6 +72,19 @@ public:
         (const idx_t, const idx_t, const idx_t, const calc_t, const data_t*, const data_t*, const data_t*, const calc_t*, calc_t*, const calc_t*) = nullptr;
     void (*AOS_backward_ALL)
         (const idx_t, const idx_t, const idx_t, const calc_t, const data_t*, const data_t*, const data_t*, const calc_t*, calc_t*, const calc_t*) = nullptr;
+    
+    void (*AOS_forward_zero_irr)
+        (const idx_t, const idx_t, const idx_t, const calc_t, const data_t*, const data_t*, const data_t*, const calc_t*, calc_t*, const calc_t*,
+        const idx_t /* which k */, const calc_t* /* contrib to this k */) = nullptr;
+    void (*AOS_forward_ALL_irr)
+        (const idx_t, const idx_t, const idx_t, const calc_t, const data_t*, const data_t*, const data_t*, const calc_t*, calc_t*, const calc_t*,
+        const idx_t /* which k */, const calc_t* /* contrib to this k */) = nullptr;
+    void (*AOS_backward_zero_irr)
+        (const idx_t, const idx_t, const idx_t, const calc_t, const data_t*, const data_t*, const data_t*, const calc_t*, calc_t*, const calc_t*,
+        const idx_t /* which k */, const calc_t* /* contrib to this k */) = nullptr;
+    void (*AOS_backward_ALL_irr)
+        (const idx_t, const idx_t, const idx_t, const calc_t, const data_t*, const data_t*, const data_t*, const calc_t*, calc_t*, const calc_t*,
+        const idx_t /* which k */, const calc_t* /* contrib to this k */) = nullptr;
 
     PointGS() : Solver<idx_t, data_t, setup_t, calc_t>() {  }
     PointGS(SCAN_TYPE type) : Solver<idx_t, data_t, setup_t, calc_t>(), scan_type(type) {
@@ -51,23 +104,12 @@ public:
         this->output_dim[2] = op.output_dim[2];
 
         separate_LUinvD();
+        prepare_irrgPts();
         const idx_t num_diag = ((const par_structMatrix<idx_t, setup_t, setup_t>&)op).num_diag;
         if constexpr (sizeof(calc_t) == 4 && sizeof(data_t) == 2) {// 单-半精度混合计算
             switch (num_diag)
             {
             case  7:
-                if (L_cprs) {// 压缩后的
-                    assert(U_cprs);
-                    // 这个有错
-                    AOS_forward_zero = sqrt_D ? AOS_compress_point_forward_zero_3d_scaled_Cal32Stg16<dof, 3>
-                                        :   AOS_compress_point_forward_zero_3d_Cal32Stg16<dof, 3>;
-                    AOS_forward_ALL  = sqrt_D ? AOS_compress_point_forward_ALL_3d_scaled_Cal32Stg16<dof, 3, 3>
-                                        :   AOS_compress_point_forward_ALL_3d_Cal32Stg16<dof, 3, 3>;
-                    AOS_backward_zero= nullptr;
-                    AOS_backward_ALL = sqrt_D ? AOS_compress_point_backward_ALL_3d_scaled_Cal32Stg16<dof, 3, 3>
-                                        :   AOS_compress_point_backward_ALL_3d_Cal32Stg16<dof, 3, 3>;
-                }
-                else {// 不带压缩的
                     AOS_forward_zero = sqrt_D ? nullptr
                                         :   AOS_point_forward_zero_3d_Cal32Stg16<dof, 3>;
                     AOS_forward_ALL  = sqrt_D ? nullptr
@@ -75,25 +117,14 @@ public:
                     AOS_backward_zero= nullptr;
                     AOS_backward_ALL = sqrt_D ? nullptr
                                         :   AOS_point_backward_ALL_3d_Cal32Stg16<dof, 3, 3>;
-                }
-                break;
-            case 15:
-                AOS_forward_zero = sqrt_D ? nullptr
-                                        :   AOS_point_forward_zero_3d_Cal32Stg16<dof, 7>;
-                AOS_forward_ALL  = sqrt_D ? nullptr
-                                        :   AOS_point_forward_ALL_3d_Cal32Stg16<dof, 7, 7>;
-                AOS_backward_zero= nullptr;
-                AOS_backward_ALL = sqrt_D ? nullptr
-                                        :   AOS_point_backward_ALL_3d_Cal32Stg16<dof, 7, 7>;
-                break;
-            case 27:
-                AOS_forward_zero = sqrt_D ? nullptr
-                                        :   AOS_point_forward_zero_3d_Cal32Stg16<dof, 13>;
-                AOS_forward_ALL  = sqrt_D ? nullptr
-                                        :   AOS_point_forward_ALL_3d_Cal32Stg16<dof, 13, 13>;
-                AOS_backward_zero= nullptr;
-                AOS_backward_ALL = sqrt_D ? nullptr
-                                        :   AOS_point_backward_ALL_3d_Cal32Stg16<dof, 13, 13>;
+
+                    AOS_forward_zero_irr = sqrt_D ? nullptr
+                                            :   AOS_point_forward_zero_3d_irr_Cal32Stg16<dof, 3>;
+                    AOS_forward_ALL_irr  = sqrt_D ? nullptr
+                                            :   AOS_point_forward_ALL_3d_irr_Cal32Stg16<dof, 3, 3>;
+                    AOS_backward_zero_irr= nullptr;
+                    AOS_backward_ALL_irr = sqrt_D ? nullptr
+                                            :   AOS_point_backward_ALL_3d_irr_Cal32Stg16<dof, 3, 3>;
                 break;
             default:
                 MPI_Abort(MPI_COMM_WORLD, -10200);
@@ -103,17 +134,6 @@ public:
             switch (num_diag)
             {
             case  7:
-                if (L_cprs) {// 压缩后的
-                    assert(U_cprs);
-                    AOS_forward_zero = sqrt_D ? AOS_compress_point_forward_zero_3d_scaled_normal<idx_t, data_t, calc_t, dof, 3>
-                                            :   AOS_compress_point_forward_zero_3d_normal<idx_t, data_t, calc_t, dof, 3>;
-                    AOS_forward_ALL  = sqrt_D ? AOS_compress_point_forward_ALL_3d_scaled_normal<idx_t, data_t, calc_t, dof, 3, 3>
-                                            :   AOS_compress_point_forward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 3, 3>;
-                    AOS_backward_zero= nullptr;
-                    AOS_backward_ALL = sqrt_D ? AOS_compress_point_backward_ALL_3d_scaled_normal<idx_t, data_t, calc_t, dof, 3, 3>
-                                            :   AOS_compress_point_backward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 3, 3>;
-                }
-                else {
                     AOS_forward_zero = sqrt_D ? AOS_point_forward_zero_3d_scaled_normal<idx_t, data_t, calc_t, dof, 3>
                                             :   AOS_point_forward_zero_3d_normal<idx_t, data_t, calc_t, dof, 3>;
                     AOS_forward_ALL  = sqrt_D ? AOS_point_forward_ALL_3d_scaled_normal<idx_t, data_t, calc_t, dof, 3, 3>
@@ -121,35 +141,13 @@ public:
                     AOS_backward_zero= nullptr;
                     AOS_backward_ALL = sqrt_D ? AOS_point_backward_ALL_3d_scaled_normal<idx_t, data_t, calc_t, dof, 3, 3>
                                             :   AOS_point_backward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 3, 3>;
-                }
-                break;
-            case 15:
-                if (L_cprs) {// 压缩后的
-                    assert(U_cprs);
-                    MPI_Abort(MPI_COMM_WORLD, -10215);
-                } else {
-                    AOS_forward_zero = sqrt_D ? AOS_point_forward_zero_3d_scaled_normal<idx_t, data_t, calc_t, dof, 7>
-                                            :   AOS_point_forward_zero_3d_normal<idx_t, data_t, calc_t, dof, 7>;
-                    AOS_forward_ALL  = sqrt_D ? AOS_point_forward_ALL_3d_scaled_normal<idx_t, data_t, calc_t, dof, 7, 7>
-                                            :   AOS_point_forward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 7, 7>;
-                    AOS_backward_zero= nullptr;
-                    AOS_backward_ALL = sqrt_D ? AOS_point_backward_ALL_3d_scaled_normal<idx_t, data_t, calc_t, dof, 7, 7>
-                                            :   AOS_point_backward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 7, 7>;
-                }
-                break;
-            case 27:
-                if (L_cprs) {
-                    assert(U_cprs);
-                    MPI_Abort(MPI_COMM_WORLD, -10227);
-                } else {
-                    AOS_forward_zero = sqrt_D ? AOS_point_forward_zero_3d_scaled_normal<idx_t, data_t, calc_t, dof, 13>
-                                            :   AOS_point_forward_zero_3d_normal<idx_t, data_t, calc_t, dof, 13>;
-                    AOS_forward_ALL  = sqrt_D ? AOS_point_forward_ALL_3d_scaled_normal<idx_t, data_t, calc_t, dof, 13, 13>
-                                            :   AOS_point_forward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 13, 13>;
-                    AOS_backward_zero= nullptr;
-                    AOS_backward_ALL = sqrt_D ? AOS_point_backward_ALL_3d_scaled_normal<idx_t, data_t, calc_t, dof, 13, 13>
-                                            :   AOS_point_backward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 13, 13>;
-                }
+                    AOS_forward_zero_irr = sqrt_D ? nullptr
+                                            :   AOS_point_forward_zero_3d_normal_irr<idx_t, data_t, calc_t, dof, 3>;
+                    AOS_forward_ALL_irr  = sqrt_D ? nullptr
+                                            :   AOS_point_forward_ALL_3d_normal_irr<idx_t, data_t, calc_t, dof, 3, 3>;
+                    AOS_backward_zero_irr= nullptr;
+                    AOS_backward_ALL_irr = sqrt_D ? nullptr
+                                            :   AOS_point_backward_ALL_3d_normal_irr<idx_t, data_t, calc_t, dof, 3, 3>;
                 break;
             default:
                 MPI_Abort(MPI_COMM_WORLD, -10203);
@@ -174,6 +172,19 @@ public:
             // if (p == len*dof) printf("PGS::invD truncate %.20e to", invD->data[p]);
             invD->data[p] = (data_t) tmp;
             // if (p == len*dof) printf("%.20e\n", invD->data[p]);
+        }
+        for (idx_t ir = 0; ir < num_irrgPts_invD; ir++) {
+            for (idx_t f = 0; f < dof*dof; f++) {
+                __fp16 tmp = (__fp16) irrgPts_invD[ir].val[f];
+                irrgPts_invD[ir].val[f] = (data_t) tmp;
+            }
+        }
+        // 非规则点
+        for (idx_t ir = 0; ir < num_irrgPts_effect; ir++) {
+            for (idx_t f = 0; f < dof*dof; f++) {
+                __fp16 tmp = (__fp16) irrg_to_Struct[ir].val[f];
+                irrg_to_Struct[ir].val[f] = (data_t) tmp;
+            }
         }
 #else
         printf("architecture not support truncated to fp16\n");
@@ -204,6 +215,66 @@ PointGS<idx_t, data_t, setup_t, calc_t, dof>::~PointGS() {
         if (invD != nullptr) {delete invD; invD = nullptr;}
         if (L != nullptr) {delete L; L = nullptr;}
         if (U != nullptr) {delete U; U = nullptr;}
+    }
+    if (num_irrgPts_invD > 0) {
+        delete irrgPts_invD; irrgPts_invD = nullptr;
+    }
+    if (num_irrgPts_effect > 0) {
+        delete irrg_to_Struct; irrg_to_Struct = nullptr;
+    }
+}
+
+template<typename idx_t, typename data_t, typename setup_t, typename calc_t, int dof>
+void PointGS<idx_t, data_t, setup_t, calc_t, dof>::prepare_irrgPts()
+{
+    const par_structMatrix<idx_t, setup_t, setup_t, dof> & par_A = *((par_structMatrix<idx_t, setup_t, setup_t, dof> *)(this->oper));
+    if (num_irrgPts_effect != 0)
+        delete irrg_to_Struct;
+    
+    std::vector<IrrgPts_Effect<idx_t, data_t, setup_t, dof> > container;
+    for (idx_t ir = 0; ir < par_A.num_irrgPts; ir++) {
+        idx_t pbeg = par_A.irrgPts[ir].beg, pend = pbeg + par_A.irrgPts[ir].nnz;
+        for (idx_t p = pbeg; p < pend; p++) {
+            if (par_A.irrgPts_ngb_ijk[p*3] != -1) {
+                idx_t loc_i = par_A.irrgPts_ngb_ijk[p*3  ] - par_A.offset_x + par_A.local_matrix->halo_x;
+                idx_t loc_j = par_A.irrgPts_ngb_ijk[p*3+1] - par_A.offset_y + par_A.local_matrix->halo_y;
+                idx_t loc_k = par_A.irrgPts_ngb_ijk[p*3+2] - par_A.offset_z + par_A.local_matrix->halo_z;
+                const setup_t * val = par_A.irrgPts_A_vals + (p*2+1) *dof*dof;// 我（非规则点）对别人结构点的影响
+                IrrgPts_Effect<idx_t, data_t, setup_t, dof> obj(ir, loc_i, loc_j, loc_k, val);
+                container.push_back(obj);
+            }
+        }
+    }
+    std::sort(container.begin(), container.end());
+    // check sorted
+    num_irrgPts_effect = container.size();
+    for (idx_t i = 0; i < num_irrgPts_effect - 1; i++) {
+        idx_t curr_i = container[i].i;
+        idx_t curr_j = container[i].j;
+        idx_t curr_k = container[i].k;
+        idx_t next_i = container[i+1].i;
+        idx_t next_j = container[i+1].j;
+        idx_t next_k = container[i+1].k;
+#ifdef DISABLE_OMP
+        assert(curr_j < next_j || (curr_j==next_j && curr_i < next_i) || (curr_j==next_j && curr_i==next_i && curr_k < next_k));
+#else
+        // 取巧的写法：因为特别地，在做level-based的并行sptrsv时，
+        // 每个level内都只有一个点会被非规则点影响，且这些点的(x,z)坐标都相同
+        assert(curr_i == next_i && curr_k == next_k);
+        assert(curr_j < next_j);
+#endif
+    }
+    // Copy
+    irrg_to_Struct = new IrrgPts_Effect<idx_t, data_t, setup_t, dof> [num_irrgPts_effect];
+    int my_pid; MPI_Comm_rank(MPI_COMM_WORLD, &my_pid);
+    for (idx_t i = 0; i < num_irrgPts_effect; i++) {
+        irrg_to_Struct[i] = container[i];
+#ifdef DEBUG
+        printf(" proc %d locally %d => (%d,%d,%d) of ", 
+            my_pid, irrg_to_Struct[i].loc_id, irrg_to_Struct[i].i, irrg_to_Struct[i].j, irrg_to_Struct[i].k);
+        for (idx_t f = 0; f < dof*dof; f++)
+            printf(" %.6e", irrg_to_Struct[i].val[f]);
+#endif
     }
 }
 
@@ -334,6 +405,7 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::ForwardPass(const    par_stru
 {
     const seq_structVector<idx_t, calc_t> & b_vec = *(b.local_vector);
           seq_structVector<idx_t, calc_t> & x_vec = *(x.local_vector);
+    const par_structMatrix<idx_t, setup_t, setup_t, dof> * par_A = (par_structMatrix<idx_t, setup_t, setup_t, dof>*)(this->oper);
     assert(LUinvD_separated);
     CHECK_LOCAL_HALO(x_vec, b_vec);
 
@@ -373,8 +445,57 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::ForwardPass(const    par_stru
     const idx_t col_height = kend - kbeg;
     void (*kernel) (const idx_t, const idx_t, const idx_t, const calc_t,
         const data_t*, const data_t*, const data_t*, const calc_t*, calc_t*, const calc_t*) = nullptr;
+    void (*kernel_irr) (const idx_t, const idx_t, const idx_t, const calc_t,
+        const data_t*, const data_t*, const data_t*, const calc_t*, calc_t*, const calc_t*, const idx_t, const calc_t*) = nullptr;
     kernel = this->zero_guess ? AOS_forward_zero : AOS_forward_ALL;
+    kernel_irr = this->zero_guess ? AOS_forward_zero_irr : AOS_forward_ALL_irr;
+
     assert(kernel);
+    assert(kernel_irr);
+
+    // int my_pid; MPI_Comm_rank(MPI_COMM_WORLD, &my_pid);
+    // printf("proc %d A.num_irr %d\n", my_pid, par_A->num_irrgPts);
+
+    // 前扫先处理非规则点
+    assert(par_A->num_irrgPts == x.num_irrgPts && x.num_irrgPts == b.num_irrgPts);
+    for (idx_t ir = 0; ir < par_A->num_irrgPts; ir++) {
+        assert(par_A->irrgPts[ir].gid == x.irrgPts[ir].gid && x.irrgPts[ir].gid == b.irrgPts[ir].gid);
+        assert(par_A->irrgPts[ir].gid == irrgPts_invD[ir].gid);
+        const idx_t pbeg = par_A->irrgPts[ir].beg, pend = pbeg + par_A->irrgPts[ir].nnz;
+        calc_t tmp[dof], tmp2[dof];
+        #pragma GCC unroll (4)
+        for (idx_t f = 0; f < dof; f++)// tmp = -b
+            tmp[f] = - b.irrgPts[ir].val[f];
+        assert(par_A->irrgPts_ngb_ijk[(pend-1)*3] == -1);// 对角元位置
+        data_t * invD_ptr = irrgPts_invD[ir].val;
+        #pragma omp parallel for schedule(static) reduction(+:tmp)// 编译期定长数组有效
+        for (idx_t p = pbeg; p < pend - 1; p++) {// 跳过了对角元
+            const idx_t ngb_i = par_A->irrgPts_ngb_ijk[p*3  ],
+                        ngb_j = par_A->irrgPts_ngb_ijk[p*3+1],
+                        ngb_k = par_A->irrgPts_ngb_ijk[p*3+2];// global coord
+            const idx_t i = ibeg + ngb_i - par_A->offset_x,
+                        j = jbeg + ngb_j - par_A->offset_y,
+                        k = kbeg + ngb_k - par_A->offset_z;
+            const setup_t * src_ptr = par_A->irrgPts_A_vals + (p<<1)*elms;
+            data_t dst_ptr[dof*dof];
+            #pragma GCC unroll (4)
+            for (idx_t f = 0; f < dof*dof; f++)
+                dst_ptr[f] = src_ptr[f];
+            matvec_mla<idx_t, data_t, calc_t, dof>(dst_ptr, x_data + j*vec_dki_size + i*vec_dk_size +  k*dof, tmp);
+        }// 此时 tmp = - b + L*x^{t} + U*x^{t}
+        matvec_mul<idx_t, data_t, calc_t, dof>(invD_ptr, tmp, tmp2, - weight);// tmp2 = w*D^{-1}*(b - L*x^{t} - U*x^{t})
+        #pragma GCC unroll 4
+        for (idx_t f = 0; f < dof; f++)
+            x.irrgPts[ir].val[f] = (1.0 - weight) * x.irrgPts[ir].val[f] + tmp2[f];
+    }
+    // 再处理结构点：边遍历三维向量边检查是否碰到非规则的邻居
+    idx_t ptr = 0, irr_ngb_i = -1, irr_ngb_j = -1, irr_ngb_k = -1;
+    bool need_to_check = ptr < num_irrgPts_effect;
+    // printf(" proc %d got %d need_to %d\n", my_pid, num_irrgPts_effect, need_to_check);
+    if (need_to_check) {
+        irr_ngb_i = irrg_to_Struct[ptr].i;  irr_ngb_j = irrg_to_Struct[ptr].j;  irr_ngb_k = irrg_to_Struct[ptr].k;
+        // printf(" proc %d before : %d %d %d\n", my_pid, irr_ngb_i, irr_ngb_j, irr_ngb_k);
+    }
 
     if (num_threads > 1) {
         const idx_t slope = (num_diag == 7 || num_diag == 15) ? 1 : 2;
@@ -407,6 +528,7 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::ForwardPass(const    par_stru
                     idx_t j_lev = jstart_lev - it;
 					idx_t i_lev = istart_lev + it * slope;
                     idx_t j = jbeg + j_lev, i = ibeg + i_lev;// 用于数组选址计算的下标
+                    bool task_check = need_to_check && j == irr_ngb_j && i == irr_ngb_i;
                     idx_t i_to_wait = (i == iend - 1) ? i_lev : (i_lev + wait_offi);
                     const idx_t vec_off = j * vec_dki_size  + i * vec_dk_size  + kbeg * dof;
                     const idx_t mat_off = j * mat_edki_size + i * mat_edk_size + kbeg * mat_ed_size;
@@ -420,17 +542,35 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::ForwardPass(const    par_stru
                     if (it == t_end - 1) while (__atomic_load_n(&flag[j_lev  ], __ATOMIC_ACQUIRE) < i_to_wait) {  }
                     
                     // 中间的不需等待
-                    kernel(col_height, vec_dk_size, vec_dki_size, weight, L_jik, U_jik, invD_jik, b_jik, x_jik, sqD_jik);
+                    if (task_check) {
+                        calc_t contrib[dof]; vec_zero<idx_t, calc_t, dof>(contrib);// 非规则点可能的贡献
+                        idx_t ir = irrg_to_Struct[ptr].loc_id;
+                        assert(par_A->irrgPts[ir].gid == x.irrgPts[ir].gid);// 确保是同一个非规则点
+                        matvec_mla<idx_t, data_t, calc_t, dof>(irrg_to_Struct[ptr].val, x.irrgPts[ir].val, contrib);
+
+                        kernel_irr(col_height, vec_dk_size, vec_dki_size, weight, L_jik, U_jik, invD_jik, b_jik, x_jik, sqD_jik, irr_ngb_k - kbeg, contrib);
+                        
+                        need_to_check = (++ptr) < num_irrgPts_effect;
+                        if (need_to_check) {
+                            assert(irr_ngb_i == irrg_to_Struct[ptr].i);
+                            assert(irr_ngb_k == irrg_to_Struct[ptr].k);
+                            irr_ngb_j = irrg_to_Struct[ptr].j;
+                        }
+                    } else {
+                        kernel(col_height, vec_dk_size, vec_dki_size, weight, L_jik, U_jik, invD_jik, b_jik, x_jik, sqD_jik);
+                    }
 
                     if (it == t_beg || it == t_end - 1) __atomic_store_n(&flag[j_lev+1], i_lev, __ATOMIC_RELEASE);
                     else flag[j_lev+1] = i_lev;
                 }
+                #pragma omp barrier // sync for ptr,need_to_check,irr_ngb_j when each lev done
             }
         }
     }
     else {
         for (idx_t j = jbeg; j < jend; j++)
         for (idx_t i = ibeg; i < iend; i++) {
+            bool task_check = need_to_check && j == irr_ngb_j && i == irr_ngb_i;
             const idx_t vec_off = j * vec_dki_size  + i * vec_dk_size  + kbeg * dof;
             const idx_t mat_off = j * mat_edki_size + i * mat_edk_size + kbeg * mat_ed_size;
             const idx_t invD_off= j * invD_dki_size + i * invD_dk_size + kbeg * elms;
@@ -438,8 +578,23 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::ForwardPass(const    par_stru
             const calc_t * sqD_jik = sqD_data ? (sqD_data + vec_off) : nullptr;
             calc_t * x_jik = x_data + vec_off;
             const calc_t * b_jik = b_data + vec_off;
-            // printf("j %d i %d\n", j, i);
-            kernel(col_height, vec_dk_size, vec_dki_size, weight, L_jik, U_jik, invD_jik, b_jik, x_jik, sqD_jik);
+            if (task_check) {
+                calc_t contrib[dof]; vec_zero<idx_t, calc_t, dof>(contrib);// 非规则点可能的贡献
+                idx_t ir = irrg_to_Struct[ptr].loc_id;
+                assert(par_A->irrgPts[ir].gid == x.irrgPts[ir].gid);// 确保是同一个非规则点
+                matvec_mla<idx_t, data_t, calc_t, dof>(irrg_to_Struct[ptr].val, x.irrgPts[ir].val, contrib);
+
+                kernel_irr(col_height, vec_dk_size, vec_dki_size, weight, L_jik, U_jik, invD_jik, b_jik, x_jik, sqD_jik, irr_ngb_k - kbeg, contrib);
+
+                need_to_check = (++ptr) < num_irrgPts_effect;
+                if (need_to_check) {
+                    assert(irr_ngb_i == irrg_to_Struct[ptr].i);
+                    assert(irr_ngb_k == irrg_to_Struct[ptr].k);
+                    irr_ngb_j = irrg_to_Struct[ptr].j;
+                }
+            } else {
+                kernel(col_height, vec_dk_size, vec_dki_size, weight, L_jik, U_jik, invD_jik, b_jik, x_jik, sqD_jik);
+            }
         }
     }
 }
@@ -450,6 +605,8 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::BackwardPass(const   par_stru
 {
     const seq_structVector<idx_t, calc_t> & b_vec = *(b.local_vector);
           seq_structVector<idx_t, calc_t> & x_vec = *(x.local_vector);
+    const par_structMatrix<idx_t, setup_t, setup_t, dof> * par_A = (par_structMatrix<idx_t, setup_t, setup_t, dof>*)(this->oper);
+    assert(LUinvD_separated);
     assert(LUinvD_separated);
     CHECK_LOCAL_HALO(x_vec, b_vec);
 
@@ -489,8 +646,19 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::BackwardPass(const   par_stru
     const idx_t col_height = kend - kbeg;
     void (*kernel) (const idx_t, const idx_t, const idx_t, const calc_t,
         const data_t*, const data_t*, const data_t*, const calc_t*, calc_t*, const calc_t*) = nullptr;
+    void (*kernel_irr) (const idx_t, const idx_t, const idx_t, const calc_t,
+        const data_t*, const data_t*, const data_t*, const calc_t*, calc_t*, const calc_t*, const idx_t, const calc_t*) = nullptr;
     kernel = this->zero_guess ? AOS_backward_zero : AOS_backward_ALL;
+    kernel_irr = this->zero_guess ? AOS_backward_zero_irr : AOS_backward_ALL_irr;
     assert(kernel);
+    assert(kernel_irr);
+
+    // 后扫先处理结构点
+    idx_t ptr = num_irrgPts_effect - 1, irr_ngb_i = -1, irr_ngb_j = -1, irr_ngb_k = -1;
+    bool need_to_check = ptr >= 0;
+    if (need_to_check) {
+        irr_ngb_i = irrg_to_Struct[ptr].i;  irr_ngb_j = irrg_to_Struct[ptr].j;  irr_ngb_k = irrg_to_Struct[ptr].k;
+    }
 
     if (num_threads > 1) {// level-based的多线程并行
         const idx_t slope = (num_diag == 7 || num_diag == 15) ? 1 : 2;
@@ -523,6 +691,7 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::BackwardPass(const   par_stru
                     idx_t j_lev = jstart_lev - it;
 					idx_t i_lev = istart_lev + it * slope;
                     idx_t j = jbeg + j_lev, i = ibeg + i_lev;// 用于数组选址计算的下标
+                    bool task_check = need_to_check && j == irr_ngb_j && i == irr_ngb_i;
                     idx_t i_to_wait = (i == ibeg) ? i_lev : (i_lev + wait_offi);
                     const idx_t vec_off = j * vec_dki_size  + i * vec_dk_size  + kend * dof;
                     const idx_t mat_off = j * mat_edki_size + i * mat_edk_size + kend * mat_ed_size;
@@ -535,16 +704,34 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::BackwardPass(const   par_stru
                     if (it == t_beg) while ( __atomic_load_n(&flag[j_lev+1], __ATOMIC_ACQUIRE) > i_to_wait) {  }
                     if (it == t_end - 1) while (__atomic_load_n(&flag[j_lev  ], __ATOMIC_ACQUIRE) > i_lev + 1) {  }
                     // 中间的不需等待
-                    kernel(col_height, vec_dk_size, vec_dki_size, weight, L_jik, U_jik, invD_jik, b_jik, x_jik, sqD_jik);
+                    if (task_check) {
+                        calc_t contrib[dof]; vec_zero<idx_t, calc_t, dof>(contrib);// 非规则点可能的贡献
+                        idx_t ir = irrg_to_Struct[ptr].loc_id;
+                        assert(par_A->irrgPts[ir].gid == x.irrgPts[ir].gid);// 确保是同一个非规则点
+                        matvec_mla<idx_t, data_t, calc_t, dof>(irrg_to_Struct[ptr].val, x.irrgPts[ir].val, contrib);
+
+                        kernel_irr(col_height, vec_dk_size, vec_dki_size, weight, L_jik, U_jik, invD_jik, b_jik, x_jik, sqD_jik, irr_ngb_k - kbeg, contrib);
+
+                        need_to_check = (--ptr) >= 0;
+                        if (need_to_check) {
+                            assert(irr_ngb_i == irrg_to_Struct[ptr].i);
+                            assert(irr_ngb_k == irrg_to_Struct[ptr].k);
+                            irr_ngb_j = irrg_to_Struct[ptr].j;
+                        }
+                    } else {
+                        kernel(col_height, vec_dk_size, vec_dki_size, weight, L_jik, U_jik, invD_jik, b_jik, x_jik, sqD_jik);
+                    }
                     if (it == t_beg || it == t_end - 1) __atomic_store_n(&flag[j_lev], i_lev, __ATOMIC_RELEASE);
                     else flag[j_lev] = i_lev;
                 }
+                #pragma omp barrier // sync for ptr,need_to_check,irr_ngb_j when each lev done
             }
         }
     }
     else {
         for (idx_t j = jend - 1; j >= jbeg; j--)
         for (idx_t i = iend - 1; i >= ibeg; i--) {
+            bool task_check = need_to_check && j == irr_ngb_j && i == irr_ngb_i;
             const idx_t vec_off = j * vec_dki_size  + i * vec_dk_size  + kend * dof;
             const idx_t mat_off = j * mat_edki_size + i * mat_edk_size + kend * mat_ed_size;
             const idx_t invD_off= j * invD_dki_size + i * invD_dk_size + kend * elms;
@@ -552,8 +739,57 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::BackwardPass(const   par_stru
             const calc_t * sqD_jik = sqD_data ? (sqD_data + vec_off) : nullptr;
             calc_t * x_jik = x_data + vec_off;
             const calc_t * b_jik = b_data + vec_off;
-            kernel(col_height, vec_dk_size, vec_dki_size, weight, L_jik, U_jik, invD_jik, b_jik, x_jik, sqD_jik);
+            if (task_check) {
+                calc_t contrib[dof]; vec_zero<idx_t, calc_t, dof>(contrib);// 非规则点可能的贡献
+                idx_t ir = irrg_to_Struct[ptr].loc_id;
+                assert(par_A->irrgPts[ir].gid == x.irrgPts[ir].gid);// 确保是同一个非规则点
+                matvec_mla<idx_t, data_t, calc_t, dof>(irrg_to_Struct[ptr].val, x.irrgPts[ir].val, contrib);
+
+                kernel_irr(col_height, vec_dk_size, vec_dki_size, weight, L_jik, U_jik, invD_jik, b_jik, x_jik, sqD_jik, irr_ngb_k - kbeg, contrib);
+                
+                need_to_check = (--ptr) >= 0;
+                if (need_to_check) {
+                    assert(irr_ngb_i == irrg_to_Struct[ptr].i);
+                    assert(irr_ngb_k == irrg_to_Struct[ptr].k);
+                    irr_ngb_j = irrg_to_Struct[ptr].j;
+                }
+            } else {
+                kernel(col_height, vec_dk_size, vec_dki_size, weight, L_jik, U_jik, invD_jik, b_jik, x_jik, sqD_jik);
+            }
         }
+    }
+
+    // 再处理非规则点
+    assert(par_A->num_irrgPts == x.num_irrgPts && x.num_irrgPts == b.num_irrgPts);
+    for (idx_t ir = par_A->num_irrgPts - 1; ir >= 0; ir--) {
+        assert(par_A->irrgPts[ir].gid == x.irrgPts[ir].gid && x.irrgPts[ir].gid == b.irrgPts[ir].gid);
+        assert(par_A->irrgPts[ir].gid == irrgPts_invD[ir].gid);
+        const idx_t pbeg = par_A->irrgPts[ir].beg, pend = pbeg + par_A->irrgPts[ir].nnz;
+        calc_t tmp[dof], tmp2[dof];
+        #pragma GCC unroll 4
+        for (idx_t f = 0; f < dof; f++)// tmp = -b
+            tmp[f] = - b.irrgPts[ir].val[f];
+        assert(par_A->irrgPts_ngb_ijk[(pend-1)*3] == -1);// 对角元位置
+        data_t * invD_ptr = irrgPts_invD[ir].val;
+        #pragma omp parallel for schedule(static) reduction(+:tmp)
+        for (idx_t p = pbeg; p < pend - 1; p++) {// 跳过了对角元
+            const idx_t ngb_i = par_A->irrgPts_ngb_ijk[p*3  ],
+                        ngb_j = par_A->irrgPts_ngb_ijk[p*3+1],
+                        ngb_k = par_A->irrgPts_ngb_ijk[p*3+2];// global coord
+            const idx_t i = ibeg + ngb_i - par_A->offset_x,
+                        j = jbeg + ngb_j - par_A->offset_y,
+                        k = kbeg + ngb_k - par_A->offset_z;
+            const setup_t * src_ptr = par_A->irrgPts_A_vals + (p<<1)*elms;
+            data_t dst_ptr[dof*dof];
+            #pragma GCC unroll (4)
+            for (idx_t f = 0; f < dof*dof; f++)
+                dst_ptr[f] = src_ptr[f];
+            matvec_mla<idx_t, data_t, calc_t, dof>(dst_ptr, x_data + j*vec_dki_size + i*vec_dk_size +  k*dof, tmp);
+        }// 此时 tmp = - b + L*x^{t} + U*x^{t}
+        matvec_mul<idx_t, data_t, calc_t, dof>(invD_ptr, tmp, tmp2, - weight);// tmp2 = w*D^{-1}*(b - L*x^{t} - U*x^{t})
+        #pragma GCC unroll 4
+        for (idx_t f = 0; f < dof; f++)
+            x.irrgPts[ir].val[f] = (1.0 - weight) * x.irrgPts[ir].val[f] + tmp2[f];
     }
 }
 
@@ -647,6 +883,21 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::separate_LUinvD() {
         #pragma omp parallel for schedule(static)
         for (idx_t i = 0; i < tot_elems; i++)
             sqrt_D->data[i] = src_h.data[i];
+    }
+
+    // 处理非规则点
+    if (par_A.num_irrgPts > 0) {
+        num_irrgPts_invD = par_A.num_irrgPts;
+        irrgPts_invD = new IrrgPts_InvMat<idx_t, data_t, dof>[num_irrgPts_invD];
+        for (idx_t ir = 0; ir < num_irrgPts_invD; ir++) {
+            irrgPts_invD[ir].gid = par_A.irrgPts[ir].gid;
+            const idx_t pbeg = par_A.irrgPts[ir].beg, pend = pbeg + par_A.irrgPts[ir].nnz;
+            setup_t buf[dof * dof], inv_res[dof * dof];
+            memcpy(buf, par_A.irrgPts_A_vals + ((pend-1)<<1)*dof*dof, sizeof(setup_t) * dof * dof);
+            matinv_row<idx_t, setup_t, dof>(buf, inv_res);
+            for (idx_t p = 0; p < dof*dof; p++)
+                irrgPts_invD[ir].val[p] = inv_res[p];
+        }
     }
 
     LUinvD_separated = true;
