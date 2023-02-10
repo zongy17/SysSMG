@@ -16,8 +16,9 @@ public:
     seq_structVector<idx_t, calc_t, dof> * sqrt_D = nullptr;
 
     seq_structMatrix<idx_t, data_t, calc_t, dof> * local_matrix;
-    mutable bool Diags_separated = false;
-    mutable seq_structVector<idx_t, data_t, dof*dof> **Diags = nullptr;
+    mutable bool LU_compressed = false;
+    mutable seq_structVector<idx_t, data_t, dof*dof> * Diag = nullptr;
+    mutable seq_structMatrix<idx_t, data_t, calc_t, 1> *L_cprs = nullptr, * U_cprs = nullptr;// 压缩后L和U仅保留对角线的的数据
 
     // 通信相关的
     StructCommPackage * comm_pkg = nullptr;
@@ -36,15 +37,15 @@ public:
         if (my_pid == 0) printf("Warning: parMat truncated to __fp16 and sqrt_D to f32\n");
         local_matrix->truncate();
 #ifdef __aarch64__
-        if (Diags_separated) {
-            for (idx_t id = 0; id < num_diag; id++) {// 逐条对角线截断
-                const idx_t nelem = (Diags[id]->local_x + Diags[id]->halo_x * 2) * (Diags[id]->local_y + Diags[id]->halo_y * 2)
-                                *   (Diags[id]->local_z + Diags[id]->halo_z * 2);
-                for (idx_t p = 0; p < nelem * dof*dof; p++) {
-                    __fp16 tmp = (__fp16) Diags[id]->data[p];
-                    Diags[id]->data[p] = (data_t) tmp;
-                }
-            }
+        if (LU_compressed) {
+            // for (idx_t id = 0; id < num_diag; id++) {// 逐条对角线截断
+            //     const idx_t nelem = (Diags[id]->local_x + Diags[id]->halo_x * 2) * (Diags[id]->local_y + Diags[id]->halo_y * 2)
+            //                     *   (Diags[id]->local_z + Diags[id]->halo_z * 2);
+            //     for (idx_t p = 0; p < nelem * dof*dof; p++) {
+            //         __fp16 tmp = (__fp16) Diags[id]->data[p];
+            //         Diags[id]->data[p] = (data_t) tmp;
+            //     }
+            // }
         }
         if (sqrt_D != nullptr) {
             const idx_t sqD_len = (sqrt_D->local_x + sqrt_D->halo_x * 2) * (sqrt_D->local_y + sqrt_D->halo_y * 2)
@@ -58,8 +59,12 @@ public:
         printf("architecture not support truncated to fp16\n");
 #endif
     }
-    void separate_Diags() const;
-    void Diags_Mult(const seq_structVector<idx_t, calc_t, dof> & x, seq_structVector<idx_t, calc_t, dof> & y) const ;
+    void compress_LU() const;
+    void compress_Mult(const seq_structVector<idx_t, calc_t, dof> & x, seq_structVector<idx_t, calc_t, dof> & y) const ;
+    void (*compress_spmv)(const idx_t, const idx_t, const idx_t, const data_t*, const data_t*, const data_t*,
+        const calc_t*, calc_t*, const calc_t*) = nullptr;
+    void (*compress_spmv_scaled)(const idx_t, const idx_t, const idx_t, const data_t*, const data_t*, const data_t*,
+        const calc_t*, calc_t*, const calc_t*) = nullptr;
 
     void update_halo();
     void Mult(const par_structVector<idx_t, calc_t, dof> & x, 
@@ -114,9 +119,36 @@ par_structMatrix<idx_t, data_t, calc_t, dof>::par_structMatrix(MPI_Comm comm, id
 
     switch (num_diag)
     {
-    case  7: stencil = stencil_offset_3d7 ; break;
-    case 15: stencil = stencil_offset_3d15; break;
-    case 27: stencil = stencil_offset_3d27; break;
+    case  7:
+        stencil = stencil_offset_3d7 ;
+        if constexpr (sizeof(data_t) == 2 && sizeof(calc_t) == 4) {
+            compress_spmv        = AOS_compress_spmv_3d_Cal32Stg16<dof, 3, 3>;
+            compress_spmv_scaled = AOS_compress_spmv_3d_scaled_Cal32Stg16<dof, 3, 3>;
+        } else {
+            compress_spmv        = AOS_compress_spmv_3d_normal<idx_t, data_t, calc_t, dof, 3, 3>;
+            compress_spmv_scaled = AOS_compress_spmv_3d_scaled_normal<idx_t, data_t, calc_t, dof, 3, 3>;
+        }
+        break;
+    case 15:
+        stencil = stencil_offset_3d15;
+        if constexpr (sizeof(data_t) == 2 && sizeof(calc_t) == 4) {
+            compress_spmv        = AOS_compress_spmv_3d_Cal32Stg16<dof, 7, 7>;
+            compress_spmv_scaled = AOS_compress_spmv_3d_scaled_Cal32Stg16<dof, 7, 7>;
+        } else {
+            compress_spmv        = AOS_compress_spmv_3d_normal<idx_t, data_t, calc_t, dof, 7, 7>;
+            compress_spmv_scaled = AOS_compress_spmv_3d_scaled_normal<idx_t, data_t, calc_t, dof, 7, 7>;
+        }
+        break;
+    case 27:
+        stencil = stencil_offset_3d27;
+        if constexpr (sizeof(data_t) == 2 && sizeof(calc_t) == 4) {
+            compress_spmv        = AOS_compress_spmv_3d_Cal32Stg16<dof, 13, 13>;
+            compress_spmv_scaled = AOS_compress_spmv_3d_scaled_Cal32Stg16<dof, 13, 13>;
+        } else {
+            compress_spmv        = AOS_compress_spmv_3d_normal<idx_t, data_t, calc_t, dof, 13, 13>;
+            compress_spmv_scaled = AOS_compress_spmv_3d_scaled_normal<idx_t, data_t, calc_t, dof, 13, 13>;
+        }
+        break;
     default: break;
     }
 }
@@ -146,14 +178,10 @@ par_structMatrix<idx_t, data_t, calc_t, dof>::~par_structMatrix()
         delete comm_pkg;
         comm_pkg = nullptr;
     }
-    if (Diags_separated) {
-        for (idx_t i = 0; i < num_diag; i++) {
-            if (Diags[i] != nullptr) {
-                delete Diags[i];
-                Diags[i] = nullptr;
-            }
-        }
-        delete [] Diags;
+    if (LU_compressed) {
+        delete Diag; Diag = nullptr;
+        delete L_cprs; L_cprs = nullptr;
+        delete U_cprs; U_cprs = nullptr;
     }
     if (scaled) {
         assert(sqrt_D != nullptr);
@@ -324,21 +352,21 @@ void par_structMatrix<idx_t, data_t, calc_t, dof>::Mult(const par_structVector<i
 #ifdef PROFILE
     int my_pid; MPI_Comm_rank(MPI_COMM_WORLD, &my_pid);
     int num_procs; MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
+    int num = LU_compressed ? (1 * local_matrix->elem_size + (num_diag - 1) * dof) : (num_diag * local_matrix->elem_size);
     double bytes = (local_matrix->local_x) * (local_matrix->local_y)
-                 * (local_matrix->local_z) * num_diag * local_matrix->elem_size * sizeof(data_t);
+              * (local_matrix->local_z) * num * sizeof(data_t);
     int num_vec =  2 + int(scaled);
     bytes += (x.local_vector->local_x + x.local_vector->halo_x * 2) * (x.local_vector->local_y + x.local_vector->halo_y * 2)
-           * (x.local_vector->local_z + x.local_vector->halo_z * 2) * num_vec * NUM_DOF * sizeof(calc_t);
+           * (x.local_vector->local_z + x.local_vector->halo_z * 2) * num_vec * dof * sizeof(calc_t);
     bytes *= num_procs;
     bytes /= (1024 * 1024 * 1024);// GB
     MPI_Barrier(y.comm_pkg->cart_comm);
     int warm_cnt = 3;
     for (int te = 0; te < warm_cnt; te++) {
-        if (Diags_separated)
-            Diags_Mult(*(x.local_vector), *(y.local_vector));
+        if (LU_compressed)
+            compress_Mult(*(x.local_vector), *(y.local_vector));
         else
-            if (scaled) local_matrix->Mult(*(x.local_vector), *(y.local_vector), sqrt_D);
-            else        local_matrix->Mult(*(x.local_vector), *(y.local_vector));
+            local_matrix->Mult(*(x.local_vector), *(y.local_vector), sqrt_D);
     }
     MPI_Barrier(y.comm_pkg->cart_comm);
     double t = wall_time();
@@ -346,9 +374,8 @@ void par_structMatrix<idx_t, data_t, calc_t, dof>::Mult(const par_structVector<i
     for (int te = 0; te < test_cnt; te++) {
 #endif
     // do computation
-    if (Diags_separated)
-        // Diags_Mult(*(x.local_vector), *(y.local_vector));
-        assert(false);
+    if (LU_compressed)
+        compress_Mult(*(x.local_vector), *(y.local_vector));
     else
         local_matrix->Mult(*(x.local_vector), *(y.local_vector), sqrt_D);
 #ifdef PROFILE
@@ -359,8 +386,8 @@ void par_structMatrix<idx_t, data_t, calc_t, dof>::Mult(const par_structVector<i
     MPI_Allreduce(&t, &maxt, 1, MPI_DOUBLE, MPI_MAX, y.comm_pkg->cart_comm);
     MPI_Allreduce(&t, &mint, 1, MPI_DOUBLE, MPI_MIN, y.comm_pkg->cart_comm);
     // mint = maxt = t;
-    if (my_pid == 0) printf("SpMv data %ld calc %ld d%dv%d total %.2f GB time %.5f/%.5f s BW %.2f/%.2f GB/s\n",
-                sizeof(data_t), sizeof(calc_t), num_diag, num_vec, bytes, mint, maxt, bytes/maxt, bytes/mint);
+    if (my_pid == 0) printf("SpMv data %ld calc %ld d%dB%dv%d total %.2f GB time %.5f/%.5f s BW %.2f/%.2f GB/s\n",
+                sizeof(data_t), sizeof(calc_t), num_diag, num, num_vec, bytes, mint, maxt, bytes/maxt, bytes/mint);
 #endif
 }
 
@@ -427,9 +454,6 @@ void par_structMatrix<idx_t, data_t, calc_t, dof>::read_data(const std::string p
 
     delete buf;
     buf = nullptr;
-
-    // 注意一定要在矩阵数据halo通信之后才能分离对角线
-    // separate_Diags();
 }
 
 template<typename idx_t, typename data_t, typename calc_t, int dof>
@@ -452,180 +476,87 @@ void par_structMatrix<idx_t, data_t, calc_t, dof>::set_diag_val(idx_t d, data_t 
 }
 
 template<typename idx_t, typename data_t, typename calc_t, int dof>
-void par_structMatrix<idx_t, data_t, calc_t, dof>::separate_Diags() const
+void par_structMatrix<idx_t, data_t, calc_t, dof>::compress_LU() const
 {
-    if (Diags_separated) {// 若之前已经分离过了，重新分离
-        int my_pid; MPI_Comm_rank(comm_pkg->cart_comm, &my_pid);
-        if (my_pid == 0) printf("Separated Diags but do separation again\n");
-        assert(Diags != nullptr);
-        for (idx_t id = 0; id < num_diag; id++)
-            if (Diags[id] != nullptr)
-                delete Diags[id];
-        delete Diags;
+    int my_pid; MPI_Comm_rank(comm_pkg->cart_comm, &my_pid);
+    if (LU_compressed) {// 若之前已经分离过了，重新分离
+        if (my_pid == 0) printf("Compressed LU but do compression again\n");
+        delete Diag;
+        delete L_cprs; delete U_cprs;
+    } else {
+        if (my_pid == 0) printf("Compress LU\n");
     }
 
     idx_t lms = local_matrix->elem_size;
     assert(lms == dof*dof);
 
-    Diags = new seq_structVector<idx_t, data_t, dof*dof>* [num_diag];
-    for (idx_t id = 0; id < num_diag; id++) {
-        Diags[id] = new seq_structVector<idx_t, data_t, dof*dof>(
-                local_matrix->local_x, local_matrix->local_y, local_matrix->local_z,
-                local_matrix->halo_x , local_matrix->halo_y , local_matrix->halo_z );
-    }
+    const idx_t lx = local_matrix->local_x, ly = local_matrix->local_y, lz = local_matrix->local_z,
+                hx = local_matrix->halo_x , hy = local_matrix->halo_y , hz = local_matrix->halo_z ;
+    const idx_t diag_id = num_diag >> 1;
+    Diag = new seq_structVector<idx_t, data_t, dof*dof>(lx, ly, lz, hx, hy, hz);
+    L_cprs = new seq_structMatrix<idx_t, data_t, calc_t, 1>(diag_id * dof, lx, ly, lz, hx, hy, hz);
+    U_cprs = new seq_structMatrix<idx_t, data_t, calc_t, 1>(*L_cprs);
 
-    idx_t tot_cells= (local_matrix->local_x + local_matrix->halo_x * 2)
-                    *(local_matrix->local_y + local_matrix->halo_y * 2)
-                    *(local_matrix->local_z + local_matrix->halo_z * 2);
+    idx_t tot_cells= (lx + hx * 2) * (ly + hy * 2) * (lz + hz * 2);
+    #pragma omp parallel for schedule(static)
     for (idx_t ic = 0; ic < tot_cells; ic++) {// 逐个单元
         const data_t * cell_data = local_matrix->data + ic * local_matrix->slice_ed_size;
-        for (idx_t id = 0; id < num_diag; id++) {// 逐条对角线的数据 SOA => AOS
-            const data_t * src_ptr = cell_data + id * lms;
-            data_t * dst_ptr = Diags[id]->data + ic * lms;
-            for (idx_t p = 0; p < lms; p++)
-                dst_ptr[p] = src_ptr[p];
+
+        data_t * L_ptr = L_cprs->data + ic * L_cprs->slice_ed_size;// 因为压缩后的L和U自由度填了1，所以elem_size=1，ed_size就是对角线
+        for (idx_t id = 0; id < diag_id; id++) {// 压缩L
+            for (idx_t f = 0; f < dof; f++)
+                L_ptr[id * dof + f] = cell_data[id * lms + f * dof + f];
+        }
+        // 对角块不压缩
+        data_t * D_ptr = Diag->data + ic * lms;
+        for (idx_t f = 0; f < lms; f++)
+            D_ptr[f] = cell_data[diag_id * lms + f];
+
+        data_t * U_ptr = U_cprs->data + ic * U_cprs->slice_ed_size;
+        for (idx_t id = diag_id + 1; id < num_diag; id++) {// 压缩U
+            for (idx_t f = 0; f < dof; f++)
+                U_ptr[(id - diag_id - 1) * dof + f] = cell_data[id * lms + f * dof + f];
         }
     }
-    Diags_separated = true;
+    LU_compressed = true;
 }
 
 
 template<typename idx_t, typename data_t, typename calc_t, int dof>
-void par_structMatrix<idx_t, data_t, calc_t, dof>::Diags_Mult(const seq_structVector<idx_t, calc_t, dof> & x,
+void par_structMatrix<idx_t, data_t, calc_t, dof>::compress_Mult(const seq_structVector<idx_t, calc_t, dof> & x,
                                                                     seq_structVector<idx_t, calc_t, dof> & y) const
 {
+    assert(LU_compressed);
     CHECK_LOCAL_HALO(*local_matrix, x);
     CHECK_LOCAL_HALO(x , y);
     const calc_t * x_data = x.data;
     calc_t * y_data = y.data;
+    const data_t * L_data = L_cprs->data, * U_data = U_cprs->data, * D_data = Diag->data;
+    const calc_t * sqD_data = scaled ? sqrt_D->data : nullptr;
+    const idx_t lms = dof*dof;
 
+    void (*kernel)(const idx_t, const idx_t, const idx_t, const data_t*, const data_t*, const data_t*,
+        const calc_t*, calc_t*, const calc_t*) = scaled ? compress_spmv_scaled : compress_spmv;
+    assert(kernel);
+    
     const idx_t ibeg = local_matrix->halo_x, iend = ibeg + local_matrix->local_x,
                 jbeg = local_matrix->halo_y, jend = jbeg + local_matrix->local_y,
                 kbeg = local_matrix->halo_z, kend = kbeg + local_matrix->local_z;
     const idx_t vec_dk_size = x.slice_dk_size, vec_dki_size = x.slice_dki_size;
-    
-    assert(dof == 3);
-    const idx_t lms = dof*dof;
-    assert(Diags_separated);
-    const idx_t mat_ek_size = Diags[0]->slice_dk_size, mat_eki_size = Diags[0]->slice_dki_size;
+    const idx_t LU_edki_size = L_cprs->slice_edki_size, LU_edk_size = L_cprs->slice_edk_size, LU_ed_size = L_cprs->slice_ed_size;
+    const idx_t col_height = kend - kbeg;
 
-    if (num_diag == 15) {
-        const data_t* A0_data = Diags[0]->data, * A1_data = Diags[1]->data, * A2_data = Diags[2]->data,
-                    * A3_data = Diags[3]->data, * A4_data = Diags[4]->data, * A5_data = Diags[5]->data,
-                    * A6_data = Diags[6]->data, * A7_data = Diags[7]->data, * A8_data = Diags[8]->data,
-                    * A9_data = Diags[9]->data, *A10_data = Diags[10]->data,*A11_data = Diags[11]->data,
-                    *A12_data = Diags[12]->data,*A13_data = Diags[13]->data,*A14_data = Diags[14]->data;
-
-        #pragma omp parallel for collapse(2) schedule(static) 
-        for (idx_t j = jbeg; j < jend; j++)
-        for (idx_t i = ibeg; i < iend; i++) {
-            const idx_t vec_off = j * vec_dki_size + i * vec_dk_size + kbeg * dof;
-            const idx_t mat_off = j * mat_eki_size + i * mat_ek_size + kbeg * lms;
-            const data_t* A0 = A0_data + mat_off, * A1 = A1_data + mat_off, * A2 = A2_data + mat_off,
-                        * A3 = A3_data + mat_off, * A4 = A4_data + mat_off, * A5 = A5_data + mat_off, 
-                        * A6 = A6_data + mat_off, * A7 = A7_data + mat_off, * A8 = A8_data + mat_off, 
-                        * A9 = A9_data + mat_off, *A10 =A10_data + mat_off, *A11 =A11_data + mat_off, 
-                        *A12 =A12_data + mat_off, *A13 =A13_data + mat_off, *A14 =A14_data + mat_off;
-            calc_t *  y_ji = y_data + vec_off;
-            const calc_t * x_ji = x_data + vec_off;
-            for (idx_t k = kbeg; k < kend; k++) {
-                calc_t * out_ptr = y_ji;
-                memset(out_ptr, 0, sizeof(calc_t) * dof);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A0, x_ji - vec_dki_size - vec_dk_size - dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A1, x_ji - vec_dki_size - vec_dk_size      , out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A2, x_ji - vec_dki_size               - dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A3, x_ji - vec_dki_size                    , out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A4, x_ji                - vec_dk_size - dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A5, x_ji                - vec_dk_size      , out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A6, x_ji                              - dof, out_ptr);
-
-                matvec_mla<idx_t, data_t, calc_t, dof>(A7, x_ji                                   , out_ptr);
-
-                matvec_mla<idx_t, data_t, calc_t, dof>(A8, x_ji                              + dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A9, x_ji                + vec_dk_size      , out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A10,x_ji                + vec_dk_size + dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A11,x_ji + vec_dki_size                    , out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A12,x_ji + vec_dki_size               + dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A13,x_ji + vec_dki_size + vec_dk_size      , out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A14,x_ji + vec_dki_size + vec_dk_size + dof, out_ptr);
-
-                y_ji += dof; x_ji += dof;
-                A0 += lms; A1 += lms; A2 += lms; A3 += lms; A4 += lms; A5 += lms; A6 += lms;
-                A7 += lms;
-                A8 += lms; A9 += lms; A10+= lms; A11+= lms; A12+= lms; A13+= lms; A14+= lms;
-            }
-        }
-    }
-    else if (num_diag == 27) {
-        const data_t* A0_data = Diags[0]->data, * A1_data = Diags[1]->data, * A2_data = Diags[2]->data,
-                    * A3_data = Diags[3]->data, * A4_data = Diags[4]->data, * A5_data = Diags[5]->data,
-                    * A6_data = Diags[6]->data, * A7_data = Diags[7]->data, * A8_data = Diags[8]->data,
-                    * A9_data = Diags[9]->data, * A10_data= Diags[10]->data,* A11_data= Diags[11]->data,
-                    * A12_data= Diags[12]->data,* A13_data= Diags[13]->data,* A14_data= Diags[14]->data,
-                    * A15_data= Diags[15]->data,* A16_data= Diags[16]->data,* A17_data= Diags[17]->data,
-                    * A18_data= Diags[18]->data,* A19_data= Diags[19]->data,* A20_data= Diags[20]->data,
-                    * A21_data= Diags[21]->data,* A22_data= Diags[22]->data,* A23_data= Diags[23]->data,
-                    * A24_data= Diags[24]->data,* A25_data= Diags[25]->data,* A26_data= Diags[26]->data;
-        #pragma omp parallel for collapse(2) schedule(static) 
-        for (idx_t j = jbeg; j < jend; j++)
-        for (idx_t i = ibeg; i < iend; i++) {
-            const idx_t vec_off = j * vec_dki_size + i * vec_dk_size + kbeg * dof;
-            const idx_t mat_off = j * mat_eki_size + i * mat_ek_size + kbeg * lms;
-            const data_t* A0 = A0_data + mat_off, * A1 = A1_data + mat_off, * A2 = A2_data + mat_off,
-                        * A3 = A3_data + mat_off, * A4 = A4_data + mat_off, * A5 = A5_data + mat_off,
-                        * A6 = A6_data + mat_off, * A7 = A7_data + mat_off, * A8 = A8_data + mat_off,
-                        * A9 = A9_data + mat_off, *A10 = A10_data+ mat_off, * A11= A11_data+ mat_off,
-                        * A12= A12_data+ mat_off, *A13 = A13_data+ mat_off, * A14= A14_data+ mat_off,
-                        * A15= A15_data+ mat_off, *A16 = A16_data+ mat_off, * A17= A17_data+ mat_off,
-                        * A18= A18_data+ mat_off, *A19 = A19_data+ mat_off, * A20= A20_data+ mat_off,
-                        * A21= A21_data+ mat_off, *A22 = A22_data+ mat_off, * A23= A23_data+ mat_off,
-                        * A24= A24_data+ mat_off, *A25 = A25_data+ mat_off, * A26= A26_data+ mat_off;
-            calc_t *  y_ji = y_data + vec_off;
-            const calc_t * x_ji = x_data + vec_off;
-            for (idx_t k = kbeg; k < kend; k++) {
-                calc_t * out_ptr = y_ji;
-                memset(out_ptr, 0, sizeof(calc_t) * dof);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A0, x_ji - vec_dki_size - vec_dk_size - dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A1, x_ji - vec_dki_size - vec_dk_size      , out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A2, x_ji - vec_dki_size - vec_dk_size + dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A3, x_ji - vec_dki_size               - dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A4, x_ji - vec_dki_size                    , out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A5, x_ji - vec_dki_size               + dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A6, x_ji - vec_dki_size + vec_dk_size - dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A7, x_ji - vec_dki_size + vec_dk_size      , out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A8, x_ji - vec_dki_size + vec_dk_size + dof, out_ptr);
-
-                matvec_mla<idx_t, data_t, calc_t, dof>(A9, x_ji                - vec_dk_size - dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A10,x_ji                - vec_dk_size      , out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A11,x_ji                - vec_dk_size + dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A12,x_ji                              - dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A13,x_ji                                   , out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A14,x_ji                              + dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A15,x_ji                + vec_dk_size - dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A16,x_ji                + vec_dk_size      , out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A17,x_ji                + vec_dk_size + dof, out_ptr);
-
-                matvec_mla<idx_t, data_t, calc_t, dof>(A18,x_ji + vec_dki_size - vec_dk_size - dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A19,x_ji + vec_dki_size - vec_dk_size      , out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A20,x_ji + vec_dki_size - vec_dk_size + dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A21,x_ji + vec_dki_size               - dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A22,x_ji + vec_dki_size                    , out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A23,x_ji + vec_dki_size               + dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A24,x_ji + vec_dki_size + vec_dk_size - dof, out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A25,x_ji + vec_dki_size + vec_dk_size      , out_ptr);
-                matvec_mla<idx_t, data_t, calc_t, dof>(A26,x_ji + vec_dki_size + vec_dk_size + dof, out_ptr);
-
-                y_ji += dof; x_ji += dof;
-                A0 += lms; A1 += lms; A2 += lms; A3 += lms; A4 += lms; A5 += lms; A6 += lms;
-                A7 += lms; A8 += lms; A9 += lms; A10+= lms; A11+= lms; A12+= lms;
-                A13+= lms;
-                A14+= lms; A15+= lms; A16+= lms; A17+= lms; A18+= lms; A19+= lms; A20+= lms;
-                A21+= lms; A22+= lms; A23+= lms; A24+= lms; A25+= lms; A26+= lms;
-            }
-        }
-    }
-    else {
-        MPI_Abort(comm_pkg->cart_comm, -123458);
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (idx_t j = jbeg; j < jend; j++)
+    for (idx_t i = ibeg; i < iend; i++) {
+        const idx_t LU_off = j * LU_edki_size + i * LU_edk_size + kbeg * LU_ed_size;
+        const data_t * L_jik = L_data + LU_off, * U_jik = U_data + LU_off;
+        const data_t * D_jik = D_data + j * Diag->slice_dki_size + i * Diag->slice_dk_size + kbeg * lms;
+        const idx_t vec_off = j * vec_dki_size + i * vec_dk_size + kbeg * dof;
+        const calc_t * sqD_jik = (sqD_data) ? (sqD_data + vec_off) : nullptr;
+        const calc_t * x_jik = x_data + vec_off;
+        calc_t * y_jik = y_data + vec_off;
+        kernel(col_height, vec_dk_size, vec_dki_size, L_jik, D_jik, U_jik, x_jik, y_jik, sqD_jik);
     }
 }
 
@@ -911,7 +842,7 @@ void par_structMatrix<idx_t, data_t, calc_t, dof>::scale(const data_t scaled_dia
     assert(check_scaling(scaled_diag));
     scaled = true;
 
-    if (Diags_separated) separate_Diags();// 需要重新分离对角线
+    if (LU_compressed) compress_LU();// 需要重新压缩非对角部分
 }
 
 template<typename idx_t, typename data_t, typename calc_t, int dof>

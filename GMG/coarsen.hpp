@@ -261,8 +261,8 @@ par_structMatrix<idx_t, data_t, data_t, dof> * Galerkin_RAP_3d(RESTRICT_TYPE rst
     coar_mat->update_halo();
     // Check if Dirichlet boundary condition met
     assert(coar_mat->check_Dirichlet());
-    if (fine_mat.Diags_separated)
-        coar_mat->separate_Diags();
+    if (fine_mat.LU_compressed)
+        coar_mat->compress_LU();
 
     // {// 打印出来看看
     //     int num_proc; MPI_Comm_size(MPI_COMM_WORLD, &num_proc);

@@ -206,8 +206,8 @@ void GeometricMultiGrid<idx_t, data_t, setup_t, calc_t, dof>::Setup(const par_st
             #pragma omp parallel for schedule(static)
             for (idx_t i = 0; i < tot_len; i++)
                 gmg_mat.data[i] = out_mat.data[i];
-            if (A_problem.Diags_separated)
-                A_array_high[0]->separate_Diags();
+            if (A_problem.LU_compressed)
+                A_array_high[0]->compress_LU();
         }
         U_array[0] = new par_structVector<idx_t, calc_t, dof>(comm, gx, gy, gz, num_procs[1], num_procs[0], num_procs[2], A_problem.num_diag != 7);
         F_array[0] = new par_structVector<idx_t, calc_t, dof>(*U_array[0]);
@@ -389,25 +389,25 @@ void GeometricMultiGrid<idx_t, data_t, setup_t, calc_t, dof>::Setup(const par_st
     // printf("proc %d %.5f %.5f %.5f %.5f %.5f\n", my_pid, part_time[0], part_time[1], part_time[2], total_time, t);
 
 #ifndef NDEBUG // 检验限制和插值正确性
-    // 检验限制算子的正确性
-    U_array[0]->set_val(1.5);
-    double res = vec_dot<idx_t, calc_t, double, dof>(*(U_array[0]), *(U_array[0]));
-    if (my_pid == 0) printf("(U0, U0): %.12e\n", res);
+    // // 检验限制算子的正确性
+    // U_array[0]->set_val(1.5);
+    // double res = vec_dot<idx_t, calc_t, double, dof>(*(U_array[0]), *(U_array[0]));
+    // if (my_pid == 0) printf("(U0, U0): %.12e\n", res);
 
-    for (idx_t i = 0; i < num_levs - 1; i++) {
-        R_ops[i]->apply(*U_array[i], *U_array[i+1], coar_to_fine_maps[i]);
-        res = vec_dot<idx_t, calc_t, double, dof>(*U_array[i+1], *U_array[i+1]);
-        if (my_pid == 0) printf("(U%d, U%d): %.12e\n", i+1, i+1, res);
-    }
-    // 检验插值算子的正确性
-    // U_array[1]->set_val(1.25);
+    // for (idx_t i = 0; i < num_levs - 1; i++) {
+    //     R_ops[i]->apply(*U_array[i], *U_array[i+1], coar_to_fine_maps[i]);
+    //     res = vec_dot<idx_t, calc_t, double, dof>(*U_array[i+1], *U_array[i+1]);
+    //     if (my_pid == 0) printf("(U%d, U%d): %.12e\n", i+1, i+1, res);
+    // }
+    // // 检验插值算子的正确性
+    // // U_array[1]->set_val(1.25);
 
-    for (idx_t i = num_levs - 1; i >= 1; i--) {
-        U_array[i-1]->set_val(0.0);// 细网格层向量先清空
-        P_ops[i-1]->apply(*U_array[i], *U_array[i-1], coar_to_fine_maps[i-1]);
-        res = vec_dot<idx_t, calc_t, double, dof>(*U_array[i-1], *U_array[i-1]);
-        if (my_pid == 0) printf("(U%d, U%d): %.12e\n", i-1, i-1, res);
-    }
+    // for (idx_t i = num_levs - 1; i >= 1; i--) {
+    //     U_array[i-1]->set_val(0.0);// 细网格层向量先清空
+    //     P_ops[i-1]->apply(*U_array[i], *U_array[i-1], coar_to_fine_maps[i-1]);
+    //     res = vec_dot<idx_t, calc_t, double, dof>(*U_array[i-1], *U_array[i-1]);
+    //     if (my_pid == 0) printf("(U%d, U%d): %.12e\n", i-1, i-1, res);
+    // }
 #endif
 }
 
@@ -454,9 +454,15 @@ void GeometricMultiGrid<idx_t, data_t, setup_t, calc_t, dof>::V_Cycle(const par_
     assert(i == num_levs - 1);// 最粗层做前平滑
     if (relax_types[i] == GaussElim) {// 直接法只做一次
             if (A_array_high[i]->scaled) {
-                seq_vec_elemwise_div(*(F_array[i]->local_vector), *(A_array_high[i]->sqrt_D));// 计算Fbar = D^{-1/2}*F
+                if constexpr (sizeof(setup_t) == sizeof(calc_t)) 
+                    seq_vec_elemwise_div(*(F_array[i]->local_vector), *(A_array_high[i]->sqrt_D));// 计算Fbar = D^{-1/2}*F
+                else
+                    seq_vec_elemwise_div(*(F_array[i]->local_vector), *(A_array_low[i]->sqrt_D));
                 smoother[i]->Mult(*F_array[i], *U_array[i], this->zero_guess);// 计算 Ubar = Abar^{-1}*Fbar
-                seq_vec_elemwise_div(*(U_array[i]->local_vector), *(A_array_high[i]->sqrt_D));// 计算U = D^{1/2}*Ubar
+                if constexpr (sizeof(setup_t) == sizeof(calc_t)) 
+                    seq_vec_elemwise_div(*(U_array[i]->local_vector), *(A_array_high[i]->sqrt_D));// 计算U = D^{1/2}*Ubar
+                else
+                    seq_vec_elemwise_div(*(U_array[i]->local_vector), *(A_array_low[i]->sqrt_D));
             } else {
                 smoother[i]->Mult(*F_array[i], *U_array[i], this->zero_guess);
             }

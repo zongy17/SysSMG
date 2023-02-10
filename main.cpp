@@ -150,7 +150,7 @@ int main(int argc, char ** argv)
         //     for (int i = 0; i < tot_len; i++)
         //         A_low.local_matrix->data[i] = A->local_matrix->data[i];
         //     assert(A_low.check_Dirichlet());
-        //     // A_low.separate_Diags();
+        //     A_low.compress_LU();
         //     par_structVector<IDX_TYPE, float> 
         //         b_low(MPI_COMM_WORLD, case_idx, case_idy, case_idz, num_proc_x, num_proc_y, num_proc_z, num_diag!=7),
         //         y_low(b_low);
@@ -200,9 +200,15 @@ int main(int argc, char ** argv)
             MPI_Abort(MPI_COMM_WORLD, -1);
         }
 
-        solver->SetMaxIter(30);
-        if      (strcmp(case_name.c_str(), "LASER" ) == 0) solver->SetRelTol(1e-9);
-        else if (strcmp(case_name.c_str(), "SOLID" ) == 0) solver->SetRelTol(1e-9);
+        solver->SetMaxIter(200);
+        solver->SetRelTol(1e-9);
+        if (strcmp(case_name.c_str(), "LASER" ) == 0) {
+            assert(num_diag == 7);
+            A->compress_LU();
+            if (prc_name == "GMG") {
+                ((GeometricMultiGrid<IDX_TYPE, PC_DATA_TYPE, KSP_TYPE, PC_CALC_TYPE>*)precond)->scale_before_setup_smoothers = true;
+            }
+        }
         if (precond != nullptr)
             solver->SetPreconditioner(*precond);
         solver->SetOperator(*A);

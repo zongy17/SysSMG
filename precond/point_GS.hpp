@@ -19,6 +19,7 @@ public:
     bool LUinvD_separated = false;
     seq_structVector<idx_t, data_t, dof*dof> * invD = nullptr;
     seq_structMatrix<idx_t, data_t, calc_t, dof> * L = nullptr, * U = nullptr;
+    seq_structMatrix<idx_t, data_t, calc_t, 1> * L_cprs = nullptr, * U_cprs = nullptr;
     void separate_LUinvD();
 
     seq_structVector<idx_t, calc_t, dof> * sqrt_D = nullptr;
@@ -51,49 +52,107 @@ public:
 
         separate_LUinvD();
         const idx_t num_diag = ((const par_structMatrix<idx_t, setup_t, setup_t>&)op).num_diag;
-        // const bool scaled = ((const par_structMatrix<idx_t, setup_t, setup_t>&)op).scaled;
-        if constexpr (sizeof(calc_t) != sizeof(data_t)) {
-            if constexpr (sizeof(calc_t) == 4 && sizeof(data_t) == 2) {// 单-半精度混合计算
-                switch (num_diag)
-                {
-                case 15:
-                    AOS_forward_zero = AOS_point_forward_zero_3d_Cal32Stg16<dof, 7>;
-                    AOS_forward_ALL  = AOS_point_forward_ALL_3d_Cal32Stg16<dof, 7, 7>;
+        if constexpr (sizeof(calc_t) == 4 && sizeof(data_t) == 2) {// 单-半精度混合计算
+            switch (num_diag)
+            {
+            case  7:
+                if (L_cprs) {// 压缩后的
+                    assert(U_cprs);
+                    // 这个有错
+                    AOS_forward_zero = sqrt_D ? AOS_compress_point_forward_zero_3d_scaled_Cal32Stg16<dof, 3>
+                                        :   AOS_compress_point_forward_zero_3d_Cal32Stg16<dof, 3>;
+                    AOS_forward_ALL  = sqrt_D ? AOS_compress_point_forward_ALL_3d_scaled_Cal32Stg16<dof, 3, 3>
+                                        :   AOS_compress_point_forward_ALL_3d_Cal32Stg16<dof, 3, 3>;
                     AOS_backward_zero= nullptr;
-                    AOS_backward_ALL = AOS_point_backward_ALL_3d_Cal32Stg16<dof, 7, 7>;
-                    break;
-                case 27:
-                    AOS_forward_zero = AOS_point_forward_zero_3d_Cal32Stg16<dof, 13>;
-                    AOS_forward_ALL  = AOS_point_forward_ALL_3d_Cal32Stg16<dof, 13, 13>;
-                    AOS_backward_zero= nullptr;
-                    AOS_backward_ALL = AOS_point_backward_ALL_3d_Cal32Stg16<dof, 13, 13>;
-                    break;
-                default:
-                    MPI_Abort(MPI_COMM_WORLD, -10200);
+                    AOS_backward_ALL = sqrt_D ? AOS_compress_point_backward_ALL_3d_scaled_Cal32Stg16<dof, 3, 3>
+                                        :   AOS_compress_point_backward_ALL_3d_Cal32Stg16<dof, 3, 3>;
                 }
+                else {// 不带压缩的
+                    AOS_forward_zero = sqrt_D ? nullptr
+                                        :   AOS_point_forward_zero_3d_Cal32Stg16<dof, 3>;
+                    AOS_forward_ALL  = sqrt_D ? nullptr
+                                        :   AOS_point_forward_ALL_3d_Cal32Stg16<dof, 3, 3>;
+                    AOS_backward_zero= nullptr;
+                    AOS_backward_ALL = sqrt_D ? nullptr
+                                        :   AOS_point_backward_ALL_3d_Cal32Stg16<dof, 3, 3>;
+                }
+                break;
+            case 15:
+                AOS_forward_zero = sqrt_D ? nullptr
+                                        :   AOS_point_forward_zero_3d_Cal32Stg16<dof, 7>;
+                AOS_forward_ALL  = sqrt_D ? nullptr
+                                        :   AOS_point_forward_ALL_3d_Cal32Stg16<dof, 7, 7>;
+                AOS_backward_zero= nullptr;
+                AOS_backward_ALL = sqrt_D ? nullptr
+                                        :   AOS_point_backward_ALL_3d_Cal32Stg16<dof, 7, 7>;
+                break;
+            case 27:
+                AOS_forward_zero = sqrt_D ? nullptr
+                                        :   AOS_point_forward_zero_3d_Cal32Stg16<dof, 13>;
+                AOS_forward_ALL  = sqrt_D ? nullptr
+                                        :   AOS_point_forward_ALL_3d_Cal32Stg16<dof, 13, 13>;
+                AOS_backward_zero= nullptr;
+                AOS_backward_ALL = sqrt_D ? nullptr
+                                        :   AOS_point_backward_ALL_3d_Cal32Stg16<dof, 13, 13>;
+                break;
+            default:
+                MPI_Abort(MPI_COMM_WORLD, -10200);
             }
         }
         else {
             switch (num_diag)
             {
+            case  7:
+                if (L_cprs) {// 压缩后的
+                    assert(U_cprs);
+                    AOS_forward_zero = sqrt_D ? AOS_compress_point_forward_zero_3d_scaled_normal<idx_t, data_t, calc_t, dof, 3>
+                                            :   AOS_compress_point_forward_zero_3d_normal<idx_t, data_t, calc_t, dof, 3>;
+                    AOS_forward_ALL  = sqrt_D ? AOS_compress_point_forward_ALL_3d_scaled_normal<idx_t, data_t, calc_t, dof, 3, 3>
+                                            :   AOS_compress_point_forward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 3, 3>;
+                    AOS_backward_zero= nullptr;
+                    AOS_backward_ALL = sqrt_D ? AOS_compress_point_backward_ALL_3d_scaled_normal<idx_t, data_t, calc_t, dof, 3, 3>
+                                            :   AOS_compress_point_backward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 3, 3>;
+                }
+                else {
+                    AOS_forward_zero = sqrt_D ? AOS_point_forward_zero_3d_scaled_normal<idx_t, data_t, calc_t, dof, 3>
+                                            :   AOS_point_forward_zero_3d_normal<idx_t, data_t, calc_t, dof, 3>;
+                    AOS_forward_ALL  = sqrt_D ? AOS_point_forward_ALL_3d_scaled_normal<idx_t, data_t, calc_t, dof, 3, 3>
+                                            :   AOS_point_forward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 3, 3>;
+                    AOS_backward_zero= nullptr;
+                    AOS_backward_ALL = sqrt_D ? AOS_point_backward_ALL_3d_scaled_normal<idx_t, data_t, calc_t, dof, 3, 3>
+                                            :   AOS_point_backward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 3, 3>;
+                }
+                break;
             case 15:
-                // AOS_forward_zero = AOS_point_forward_zero_3d15<idx_t, data_t, calc_t, dof>;
-                // AOS_forward_ALL  = AOS_point_forward_ALL_3d15<idx_t, data_t, calc_t, dof>;
-                // AOS_backward_zero= nullptr;
-                // AOS_backward_ALL = AOS_point_backward_ALL_3d15<idx_t, data_t, calc_t, dof>;
-                AOS_forward_zero = AOS_point_forward_zero_3d_normal<idx_t, data_t, calc_t, dof, 7>;
-                AOS_forward_ALL  = AOS_point_forward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 7, 7>;
-                AOS_backward_zero= nullptr;
-                AOS_backward_ALL = AOS_point_backward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 7, 7>;
+                if (L_cprs) {// 压缩后的
+                    assert(U_cprs);
+                    MPI_Abort(MPI_COMM_WORLD, -10215);
+                } else {
+                    AOS_forward_zero = sqrt_D ? AOS_point_forward_zero_3d_scaled_normal<idx_t, data_t, calc_t, dof, 7>
+                                            :   AOS_point_forward_zero_3d_normal<idx_t, data_t, calc_t, dof, 7>;
+                    AOS_forward_ALL  = sqrt_D ? AOS_point_forward_ALL_3d_scaled_normal<idx_t, data_t, calc_t, dof, 7, 7>
+                                            :   AOS_point_forward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 7, 7>;
+                    AOS_backward_zero= nullptr;
+                    AOS_backward_ALL = sqrt_D ? AOS_point_backward_ALL_3d_scaled_normal<idx_t, data_t, calc_t, dof, 7, 7>
+                                            :   AOS_point_backward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 7, 7>;
+                }
                 break;
             case 27:
-                AOS_forward_zero = AOS_point_forward_zero_3d_normal<idx_t, data_t, calc_t, dof, 13>;
-                AOS_forward_ALL  = AOS_point_forward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 13, 13>;
-                AOS_backward_zero= nullptr;
-                AOS_backward_ALL = AOS_point_backward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 13, 13>;
+                if (L_cprs) {
+                    assert(U_cprs);
+                    MPI_Abort(MPI_COMM_WORLD, -10227);
+                } else {
+                    AOS_forward_zero = sqrt_D ? AOS_point_forward_zero_3d_scaled_normal<idx_t, data_t, calc_t, dof, 13>
+                                            :   AOS_point_forward_zero_3d_normal<idx_t, data_t, calc_t, dof, 13>;
+                    AOS_forward_ALL  = sqrt_D ? AOS_point_forward_ALL_3d_scaled_normal<idx_t, data_t, calc_t, dof, 13, 13>
+                                            :   AOS_point_forward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 13, 13>;
+                    AOS_backward_zero= nullptr;
+                    AOS_backward_ALL = sqrt_D ? AOS_point_backward_ALL_3d_scaled_normal<idx_t, data_t, calc_t, dof, 13, 13>
+                                            :   AOS_point_backward_ALL_3d_normal<idx_t, data_t, calc_t, dof, 13, 13>;
+                }
                 break;
             default:
-                MPI_Abort(MPI_COMM_WORLD, -10200);
+                MPI_Abort(MPI_COMM_WORLD, -10203);
             }
         }
     }
@@ -182,16 +241,22 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::Mult(const   par_structVector
             MPI_Allreduce(&t, &maxt, 1, MPI_DOUBLE, MPI_MAX, b.comm_pkg->cart_comm);
             MPI_Allreduce(&t, &mint, 1, MPI_DOUBLE, MPI_MIN, b.comm_pkg->cart_comm);
             if (my_pid == 0) {
-                int num_diag = L->num_diag + 1 + (this->zero_guess ? 0 : U->num_diag);
+                int num;
+                if (L_cprs) {
+                    num = dof*dof + L_cprs->num_diag;
+                    if (this->zero_guess == false) num += U_cprs->num_diag; 
+                } else {
+                    num = dof*dof * (L->num_diag + 1);
+                    if (this->zero_guess == false) num += dof*dof * U->num_diag;
+                }
                 int num_vec = sqrt_D ? 2 : 3;
                 bytes = (x.local_vector->local_x + x.local_vector->halo_x * 2) * (x.local_vector->local_y + x.local_vector->halo_y * 2)
-                      * (x.local_vector->local_z + x.local_vector->halo_z * 2) * sizeof(calc_t) * num_vec * NUM_DOF;// 向量的数据量
-                bytes += x.local_vector->local_x * x.local_vector->local_y * x.local_vector->local_z
-                        * num_diag * NUM_DOF*NUM_DOF* sizeof(data_t);
+                      * (x.local_vector->local_z + x.local_vector->halo_z * 2) * sizeof(calc_t) * num_vec * dof;// 向量的数据量
+                bytes += x.local_vector->local_x * x.local_vector->local_y * x.local_vector->local_z * num * sizeof(data_t);
                 bytes *= num_procs;
                 bytes /= (1024 * 1024 * 1024);// GB
-                printf("PGS-F data %ld calc %ld d%dv%d total %.2f GB time %.5f/%.5f s BW %.2f/%.2f GB/s\n",
-                     sizeof(data_t), sizeof(calc_t), num_diag, num_vec, bytes, mint, maxt, bytes/maxt, bytes/mint);
+                printf("PGS-F data %ld calc %ld B%dv%d total %.2f GB time %.5f/%.5f s BW %.2f/%.2f GB/s\n",
+                     sizeof(data_t), sizeof(calc_t), num, num_vec, bytes, mint, maxt, bytes/maxt, bytes/mint);
             }
             MPI_Barrier(MPI_COMM_WORLD);
             t = wall_time();
@@ -210,16 +275,22 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::Mult(const   par_structVector
             MPI_Allreduce(&t, &maxt, 1, MPI_DOUBLE, MPI_MAX, b.comm_pkg->cart_comm);
             MPI_Allreduce(&t, &mint, 1, MPI_DOUBLE, MPI_MIN, b.comm_pkg->cart_comm);
             if (my_pid == 0) {
-                int num_diag = L->num_diag + 1 + (this->zero_guess ? 0 : U->num_diag);
+                int num;
+                if (U_cprs) {
+                    num = dof*dof + U_cprs->num_diag;
+                    if (this->zero_guess == false) num += L_cprs->num_diag; 
+                } else {
+                    num = dof*dof * (U->num_diag + 1);
+                    if (this->zero_guess == false) num += dof*dof * L->num_diag;
+                }
                 int num_vec = sqrt_D ? 2 : 3;
                 bytes = (x.local_vector->local_x + x.local_vector->halo_x * 2) * (x.local_vector->local_y + x.local_vector->halo_y * 2)
-                      * (x.local_vector->local_z + x.local_vector->halo_z * 2) * sizeof(calc_t) * num_vec * NUM_DOF;// 向量的数据量
-                bytes += x.local_vector->local_x * x.local_vector->local_y * x.local_vector->local_z
-                        * num_diag * NUM_DOF*NUM_DOF* sizeof(data_t);
+                      * (x.local_vector->local_z + x.local_vector->halo_z * 2) * sizeof(calc_t) * num_vec * dof;// 向量的数据量
+                bytes += x.local_vector->local_x * x.local_vector->local_y * x.local_vector->local_z * num * sizeof(data_t);
                 bytes *= num_procs;
                 bytes /= (1024 * 1024 * 1024);// GB
-                printf("PGS-B data %ld calc %ld d%dv%d total %.2f GB time %.5f/%.5f s BW %.2f/%.2f GB/s\n",
-                     sizeof(data_t), sizeof(calc_t), num_diag, num_vec, bytes, mint, maxt, bytes/maxt, bytes/mint);
+                printf("PGS-B data %ld calc %ld B%dv%d total %.2f GB time %.5f/%.5f s BW %.2f/%.2f GB/s\n",
+                     sizeof(data_t), sizeof(calc_t), num, num_vec, bytes, mint, maxt, bytes/maxt, bytes/mint);
             }
 #endif
             break;
@@ -265,21 +336,36 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::ForwardPass(const    par_stru
           seq_structVector<idx_t, calc_t> & x_vec = *(x.local_vector);
     assert(LUinvD_separated);
     CHECK_LOCAL_HALO(x_vec, b_vec);
-    CHECK_LOCAL_HALO(x_vec, *L);
-
-    const idx_t num_diag = (L->num_diag << 1) + 1;
 
     const calc_t * b_data = b_vec.data;
           calc_t * x_data = x_vec.data;
-    const data_t * L_data = L->data, * U_data = U->data, * invD_data = invD->data;
+    idx_t num_diag;
+    const data_t * L_data = nullptr, * U_data = nullptr;
+    idx_t mat_edki_size, mat_edk_size, mat_ed_size;
+    if (L_cprs) {
+        CHECK_LOCAL_HALO(x_vec, *L_cprs);
+        assert(U_cprs);
+        num_diag = L_cprs->num_diag / dof;
+        L_data = L_cprs->data; U_data = U_cprs->data;
+        mat_edki_size = L_cprs->slice_edki_size;
+        mat_edk_size  = L_cprs->slice_edk_size ;
+        mat_ed_size   = L_cprs->slice_ed_size  ;
+    } else {
+        CHECK_LOCAL_HALO(x_vec, *L);
+        num_diag = (L->num_diag << 1) + 1;
+        L_data = L->data; U_data = U->data;
+        mat_edki_size = L->slice_edki_size;
+        mat_edk_size  = L->slice_edk_size ;
+        mat_ed_size   = L->slice_ed_size  ;
+    }
+    const data_t * invD_data = invD->data;
     const calc_t * sqD_data = sqrt_D ? sqrt_D->data : nullptr;
+    const idx_t vec_dk_size = x_vec.slice_dk_size, vec_dki_size = x_vec.slice_dki_size;
+    const idx_t invD_dk_size = invD->slice_dk_size, invD_dki_size = invD->slice_dki_size;
 
     const idx_t ibeg = b_vec.halo_x, iend = ibeg + b_vec.local_x,
                 jbeg = b_vec.halo_y, jend = jbeg + b_vec.local_y,
                 kbeg = b_vec.halo_z, kend = kbeg + b_vec.local_z;
-    const idx_t vec_dk_size = x_vec.slice_dk_size, vec_dki_size = x_vec.slice_dki_size;
-    const idx_t mat_edki_size = L->slice_edki_size, mat_edk_size = L->slice_edk_size, mat_ed_size = L->slice_ed_size;
-    const idx_t invD_dk_size = invD->slice_dk_size, invD_dki_size = invD->slice_dki_size;
     const idx_t elms = dof*dof;
 
     const calc_t weight = this->weight;
@@ -287,11 +373,7 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::ForwardPass(const    par_stru
     const idx_t col_height = kend - kbeg;
     void (*kernel) (const idx_t, const idx_t, const idx_t, const calc_t,
         const data_t*, const data_t*, const data_t*, const calc_t*, calc_t*, const calc_t*) = nullptr;
-    if (this->zero_guess) {
-        kernel = sqrt_D ? nullptr : AOS_forward_zero; 
-    } else {
-        kernel = sqrt_D ? nullptr : AOS_forward_ALL;
-    }
+    kernel = this->zero_guess ? AOS_forward_zero : AOS_forward_ALL;
     assert(kernel);
 
     if (num_threads > 1) {
@@ -370,21 +452,36 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::BackwardPass(const   par_stru
           seq_structVector<idx_t, calc_t> & x_vec = *(x.local_vector);
     assert(LUinvD_separated);
     CHECK_LOCAL_HALO(x_vec, b_vec);
-    CHECK_LOCAL_HALO(x_vec, *U);
-
-    const idx_t num_diag = (U->num_diag << 1) + 1;
 
     const calc_t * b_data = b_vec.data;
           calc_t * x_data = x_vec.data;
-    const data_t * L_data = L->data, * U_data = U->data, * invD_data = invD->data;
+    idx_t num_diag;
+    const data_t * L_data = nullptr, * U_data = nullptr;
+    idx_t mat_edki_size, mat_edk_size, mat_ed_size;
+    if (U_cprs) {
+        CHECK_LOCAL_HALO(x_vec, *U_cprs);
+        assert(L_cprs);
+        num_diag = U_cprs->num_diag / dof;
+        L_data = L_cprs->data; U_data = U_cprs->data;
+        mat_edki_size = U_cprs->slice_edki_size;
+        mat_edk_size  = U_cprs->slice_edk_size ;
+        mat_ed_size   = U_cprs->slice_ed_size  ;
+    } else {
+        CHECK_LOCAL_HALO(x_vec, *U);
+        num_diag = (U->num_diag << 1) + 1;
+        L_data = L->data; U_data = U->data;
+        mat_edki_size = U->slice_edki_size;
+        mat_edk_size  = U->slice_edk_size ;
+        mat_ed_size   = U->slice_ed_size  ;
+    }
+    const data_t * invD_data = invD->data;
     const calc_t * sqD_data = sqrt_D ? sqrt_D->data : nullptr;
+    const idx_t vec_dk_size = x_vec.slice_dk_size, vec_dki_size = x_vec.slice_dki_size;
+    const idx_t invD_dk_size = invD->slice_dk_size, invD_dki_size = invD->slice_dki_size;
 
     const idx_t ibeg = b_vec.halo_x, iend = ibeg + b_vec.local_x,
                 jbeg = b_vec.halo_y, jend = jbeg + b_vec.local_y,
                 kbeg = b_vec.halo_z, kend = kbeg + b_vec.local_z;
-    const idx_t vec_dk_size = x_vec.slice_dk_size, vec_dki_size = x_vec.slice_dki_size;
-    const idx_t mat_edki_size = L->slice_edki_size, mat_edk_size = L->slice_edk_size, mat_ed_size = L->slice_ed_size;
-    const idx_t invD_dk_size = invD->slice_dk_size, invD_dki_size = invD->slice_dki_size;
     const idx_t elms = dof*dof;
 
     const calc_t weight = this->weight;
@@ -392,11 +489,7 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::BackwardPass(const   par_stru
     const idx_t col_height = kend - kbeg;
     void (*kernel) (const idx_t, const idx_t, const idx_t, const calc_t,
         const data_t*, const data_t*, const data_t*, const calc_t*, calc_t*, const calc_t*) = nullptr;
-    if (this->zero_guess) {
-        kernel = sqrt_D ? nullptr : AOS_backward_zero; 
-    } else {
-        kernel = sqrt_D ? nullptr : AOS_backward_ALL;
-    }
+    kernel = this->zero_guess ? AOS_backward_zero : AOS_backward_ALL;
     assert(kernel);
 
     if (num_threads > 1) {// level-based的多线程并行
@@ -476,8 +569,6 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::separate_LUinvD() {
     const idx_t lx = seq_A.local_x, ly = seq_A.local_y, lz = seq_A.local_z;
     assert(dof*dof == seq_A.elem_size);
     invD = new seq_structVector<idx_t, data_t, dof*dof>(lx, ly, lz, hx, hy, hz);
-    L = new seq_structMatrix<idx_t, data_t, calc_t, dof>(diag_id, lx, ly, lz, hx, hy, hz);
-    U = new seq_structMatrix<idx_t, data_t, calc_t, dof>(diag_id, lx, ly, lz, hx, hy, hz);
 
     int my_pid; MPI_Comm_rank(MPI_COMM_WORLD, &my_pid);
     if constexpr (sizeof(setup_t) != sizeof(data_t)) {
@@ -488,32 +579,64 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::separate_LUinvD() {
     const idx_t jbeg = hy, jend = jbeg + ly,// 注意这里经常写bug
                 ibeg = hx, iend = ibeg + lx,
                 kbeg = hz, kend = kbeg + lz;
-    #pragma omp parallel 
-    {
-        setup_t buf[dof * dof], inv_res[dof * dof];
-        #pragma omp for collapse(3) schedule(static)
-        for (idx_t j = jbeg; j < jend; j++)
-        for (idx_t i = ibeg; i < iend; i++)
-        for (idx_t k = kbeg; k < kend; k++) {
-            const setup_t * src_ptr = seq_A.data + j * seq_A.slice_edki_size + i * seq_A.slice_edk_size + k * seq_A.slice_ed_size;
-                    data_t *  L_ptr = L->data    + j *    L->slice_edki_size + i *    L->slice_edk_size + k *    L->slice_ed_size;
-                    data_t *  U_ptr = U->data    + j *    U->slice_edki_size + i *    U->slice_edk_size + k *    U->slice_ed_size;
-                data_t   * invD_ptr = invD->data + j * invD->slice_dki_size  + i * invD->slice_dk_size  + k * dof*dof;
-            const idx_t copy_nelems = diag_id * seq_A.elem_size;
-            for (idx_t p = 0; p < copy_nelems; p++)// L部分
-                L_ptr[p] = src_ptr[p];
-            src_ptr += copy_nelems;
-            
-            memcpy(buf, src_ptr, sizeof(setup_t) * dof * dof);
-            matinv_row<idx_t, setup_t, dof>(buf, inv_res);
-            for (idx_t p = 0; p < dof*dof; p++)
-                invD_ptr[p] = inv_res[p];
-            // for (idx_t f = 0; f < seq_A.elem_size; f++) printf("%.5e ", invD_ptr[f]);
-            // printf("\n");
+    if (par_A.LU_compressed) {
+        const seq_structVector<idx_t, setup_t, dof*dof> * Diag = par_A.Diag;
+        L_cprs = new seq_structMatrix<idx_t, data_t, calc_t, 1>(diag_id * dof, lx, ly, lz, hx, hy, hz);
+        U_cprs = new seq_structMatrix<idx_t, data_t, calc_t, 1>(*L_cprs);
+        #pragma omp parallel 
+        {
+            setup_t buf[dof * dof], inv_res[dof * dof];
+            #pragma omp for collapse(3) schedule(static)
+            for (idx_t j = jbeg; j < jend; j++)
+            for (idx_t i = ibeg; i < iend; i++)
+            for (idx_t k = kbeg; k < kend; k++) {
+                // compressed L and U
+                idx_t cprs_off = j * L_cprs->slice_edki_size + i * L_cprs->slice_edk_size + k * L_cprs->slice_ed_size;
+                for (idx_t d = 0; d < diag_id * dof; d++)
+                    L_cprs->data[cprs_off + d] = par_A.L_cprs->data[cprs_off + d];
+                for (idx_t d = 0; d < diag_id * dof; d++)
+                    U_cprs->data[cprs_off + d] = par_A.U_cprs->data[cprs_off + d];
 
-            src_ptr += dof*dof;
-            for (idx_t p = 0; p < copy_nelems; p++)// U部分
-                U_ptr[p] = src_ptr[p];
+                // D => calc invD
+                const setup_t * Diag_ptr= Diag->data + j * Diag->slice_dki_size + i * Diag->slice_dk_size + k * dof*dof;
+                    data_t   * invD_ptr = invD->data + j * invD->slice_dki_size + i * invD->slice_dk_size + k * dof*dof;
+                memcpy(buf, Diag_ptr, sizeof(setup_t) * dof * dof);
+                matinv_row<idx_t, setup_t, dof>(buf, inv_res);
+                for (idx_t p = 0; p < dof*dof; p++)
+                    invD_ptr[p] = inv_res[p];
+            }
+        }
+    }
+    else {
+        L = new seq_structMatrix<idx_t, data_t, calc_t, dof>(diag_id, lx, ly, lz, hx, hy, hz);
+        U = new seq_structMatrix<idx_t, data_t, calc_t, dof>(diag_id, lx, ly, lz, hx, hy, hz);
+        #pragma omp parallel 
+        {
+            setup_t buf[dof * dof], inv_res[dof * dof];
+            #pragma omp for collapse(3) schedule(static)
+            for (idx_t j = jbeg; j < jend; j++)
+            for (idx_t i = ibeg; i < iend; i++)
+            for (idx_t k = kbeg; k < kend; k++) {
+                const setup_t * src_ptr = seq_A.data + j * seq_A.slice_edki_size + i * seq_A.slice_edk_size + k * seq_A.slice_ed_size;
+                        data_t *  L_ptr = L->data    + j *    L->slice_edki_size + i *    L->slice_edk_size + k *    L->slice_ed_size;
+                        data_t *  U_ptr = U->data    + j *    U->slice_edki_size + i *    U->slice_edk_size + k *    U->slice_ed_size;
+                    data_t   * invD_ptr = invD->data + j * invD->slice_dki_size  + i * invD->slice_dk_size  + k * dof*dof;
+                const idx_t copy_nelems = diag_id * seq_A.elem_size;
+                for (idx_t p = 0; p < copy_nelems; p++)// L部分
+                    L_ptr[p] = src_ptr[p];
+                src_ptr += copy_nelems;
+                
+                memcpy(buf, src_ptr, sizeof(setup_t) * dof * dof);
+                matinv_row<idx_t, setup_t, dof>(buf, inv_res);
+                for (idx_t p = 0; p < dof*dof; p++)
+                    invD_ptr[p] = inv_res[p];
+                // for (idx_t f = 0; f < seq_A.elem_size; f++) printf("%.5e ", invD_ptr[f]);
+                // printf("\n");
+
+                src_ptr += dof*dof;
+                for (idx_t p = 0; p < copy_nelems; p++)// U部分
+                    U_ptr[p] = src_ptr[p];
+            }
         }
     }
 

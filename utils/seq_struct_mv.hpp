@@ -2,7 +2,6 @@
 #define SOLID_SEQ_STRUCT_MV_HPP
 
 #include "common.hpp"
-#include "blk_kernels.hpp"
 
 // 向量只需要一种精度
 template<typename idx_t, typename data_t, int dof=NUM_DOF>
@@ -81,6 +80,8 @@ public:
     void Mult(const seq_structVector<idx_t, calc_t, dof> & x, seq_structVector<idx_t, calc_t, dof> & y,
             const seq_structVector<idx_t, calc_t, dof> * sqrtD_ptr = nullptr) const;
     void (*spmv)(const idx_t num, const idx_t vec_dk_size, const idx_t vec_dki_size,
+        const data_t * A_jik, const calc_t * x_jik, calc_t * y_jik, const calc_t * sqD_jik) = nullptr;
+    void (*spmv_scaled)(const idx_t num, const idx_t vec_dk_size, const idx_t vec_dki_size,
         const data_t * A_jik, const calc_t * x_jik, calc_t * y_jik, const calc_t * sqD_jik) = nullptr;
 };
 
@@ -366,9 +367,8 @@ void seq_vec_elemwise_div(seq_structVector<idx_t, data_t1, dof> & inout_vec, con
 /*
  * * * * * seq_structMatrix * * * * * 
  */
-#include "kernels_3d7.hpp"
-#include "kernels_3d15.hpp"
-#include "kernels_3d27.hpp"
+#include "scal_kernels.hpp"
+#include "vect_kernels.hpp"
 
 template<typename idx_t, typename data_t, typename calc_t, int dof>
 seq_structMatrix<idx_t, data_t, calc_t, dof>::seq_structMatrix(idx_t num_d, idx_t lx, idx_t ly, idx_t lz, idx_t hx, idx_t hy, idx_t hz)
@@ -385,21 +385,30 @@ seq_structMatrix<idx_t, data_t, calc_t, dof>::seq_structMatrix(idx_t num_d, idx_
     switch (num_diag)
     {
     case  7:
-        if constexpr (sizeof(data_t) == sizeof(calc_t)) spmv = AOS_spmv_3d_normal<idx_t, data_t, calc_t, dof, 7>;//AOS_spmv_3d7<idx_t, data_t, calc_t, dof>;
-        else {
-            if constexpr (sizeof(data_t) == 2 && sizeof(calc_t) == 4) spmv = AOS_spmv_3d_Cal32Stg16<dof, 7>;//AOS_spmv_3d7_Cal32Stg16<dof>;
+        if constexpr (sizeof(data_t) == 2 && sizeof(calc_t) == 4) {
+            spmv        = AOS_spmv_3d_Cal32Stg16<dof, 7>;
+            spmv_scaled = AOS_spmv_3d_scaled_Cal32Stg16<dof, 7>;
+        } else {
+            spmv        = AOS_spmv_3d_normal<idx_t, data_t, calc_t, dof, 7>;
+            spmv_scaled = AOS_spmv_3d_scaled_normal<idx_t, data_t, calc_t, dof, 7>;
         }
         break;
     case 15:
-        if constexpr (sizeof(data_t) == sizeof(calc_t)) spmv = AOS_spmv_3d_normal<idx_t, data_t, calc_t, dof, 15>;//AOS_spmv_3d15<idx_t, data_t, calc_t, dof>;
-        else {
-            if constexpr (sizeof(data_t) == 2 && sizeof(calc_t) == 4) spmv = AOS_spmv_3d_Cal32Stg16<dof, 15>;//AOS_spmv_3d15_Cal32Stg16<dof>;
+        if constexpr (sizeof(data_t) == 2 && sizeof(calc_t) == 4) {
+            spmv        = AOS_spmv_3d_Cal32Stg16<dof, 15>;
+            spmv_scaled = AOS_spmv_3d_scaled_Cal32Stg16<dof, 15>;
+        } else {
+            spmv        = AOS_spmv_3d_normal<idx_t, data_t, calc_t, dof, 15>;
+            spmv_scaled = AOS_spmv_3d_scaled_normal<idx_t, data_t, calc_t, dof, 15>;
         }
         break;
     case 27:
-        if constexpr (sizeof(data_t) == sizeof(calc_t)) spmv = AOS_spmv_3d_normal<idx_t, data_t, calc_t, dof, 27>;//AOS_spmv_3d27<idx_t, data_t, calc_t, dof>;
-        else {
-            if constexpr (sizeof(data_t) == 2 && sizeof(calc_t) == 4) spmv = AOS_spmv_3d_Cal32Stg16<dof, 27>;//AOS_spmv_3d27_Cal32Stg16<dof>;
+        if constexpr (sizeof(data_t) == 2 && sizeof(calc_t) == 4) {
+            spmv        = AOS_spmv_3d_Cal32Stg16<dof, 27>;
+            spmv_scaled = AOS_spmv_3d_scaled_Cal32Stg16<dof, 27>;
+        } else {
+            spmv        = AOS_spmv_3d_normal<idx_t, data_t, calc_t, dof, 27>;
+            spmv_scaled = AOS_spmv_3d_scaled_normal<idx_t, data_t, calc_t, dof, 27>;
         }
         break;
     default: break;
@@ -432,7 +441,7 @@ void seq_structMatrix<idx_t, data_t, calc_t, dof>::Mult(const seq_structVector<i
     const data_t* mat_data = data;
     const calc_t* aux_data = (sqrtD_ptr) ? sqrtD_ptr->data : nullptr;
     void (*kernel)(const idx_t num, const idx_t vec_dk_size, const idx_t vec_dki_size,
-        const data_t * A_jik, const calc_t * x_jik, calc_t * y_jik, const calc_t * sqD_jik) = sqrtD_ptr ? nullptr : spmv;
+        const data_t * A_jik, const calc_t * x_jik, calc_t * y_jik, const calc_t * sqD_jik) = sqrtD_ptr ? spmv_scaled : spmv;
     assert(kernel);
 
     const calc_t * x_data = x.data;
@@ -482,7 +491,10 @@ void seq_structMatrix<idx_t, data_t, calc_t, dof>::set_diag_val(idx_t d, data_t 
         data_t * ptr = data + d * elem_size + k * slice_ed_size + i * slice_edk_size + j * slice_edki_size;
         #pragma GCC unroll (4)
         for (idx_t e = 0; e < elem_size; e++)
-            ptr[e] = val;
+            ptr[e] = 0.0;
+        #pragma GCC unroll (4)
+        for (idx_t f = 0; f < dof; f++)
+            ptr[f * dof + f] = val;
     }
 }
 
