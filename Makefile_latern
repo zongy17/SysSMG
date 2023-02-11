@@ -1,0 +1,33 @@
+CXX = mpiicpc
+CFLAGS = -std=c++17 -Wall -fopenmp
+
+OPT = -O3 -g
+#OPT = -Ofast -DNDEBUG
+#OPT = -DTRC -O3 -g
+
+CFLAGS += $(OPT)
+
+MKL_HOME = /software/intel/2019/compilers_and_libraries_2019.5.281/linux/mkl
+MKL_LIB  = $(MKL_HOME)/lib/intel64
+MKL_INCLUDE = $(MKL_HOME)/include
+LAPACK = -L$(MKL_LIB) -lmkl_intel_lp64 -lmkl_intel_thread -lmkl_core
+SCALAP = -L$(MKL_LIB) -lmkl_scalapack_lp64 -lmkl_blacs_intelmpi_lp64
+
+PARDISO_INC = -I$(MKL_INCLUDE)
+LPARDISO = $(SCALAP) $(LAPACK)
+
+INC = $(PARDISO_INC)
+EXT_LD = $(LPARDISO)
+
+CL  = mpiicpc
+LFLAGS = -lm -fopenmp -lstdc++
+
+all:    smg_All64.exe
+
+smg_All64.exe : main.cpp
+	$(CL) $^ $(CFLAGS) $(INC) -DKSP_BIT=64 -DPC_DATA_BIT=64 -DPC_CACL_BIT=64 $(LFLAGS) $(EXT_LD) -o $@
+
+.PHONY: clean
+
+clean : 
+	rm smg_*.exe *.o

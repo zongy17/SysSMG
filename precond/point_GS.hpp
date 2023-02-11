@@ -484,7 +484,7 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::ForwardPass(const    par_stru
             matvec_mla<idx_t, data_t, calc_t, dof>(dst_ptr, x_data + j*vec_dki_size + i*vec_dk_size +  k*dof, tmp);
         }// 此时 tmp = - b + L*x^{t} + U*x^{t}
         matvec_mul<idx_t, data_t, calc_t, dof>(invD_ptr, tmp, tmp2, - weight);// tmp2 = w*D^{-1}*(b - L*x^{t} - U*x^{t})
-        #pragma GCC unroll 4
+        #pragma GCC unroll (4)
         for (idx_t f = 0; f < dof; f++)
             x.irrgPts[ir].val[f] = (1.0 - weight) * x.irrgPts[ir].val[f] + tmp2[f];
     }
@@ -766,7 +766,7 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::BackwardPass(const   par_stru
         assert(par_A->irrgPts[ir].gid == irrgPts_invD[ir].gid);
         const idx_t pbeg = par_A->irrgPts[ir].beg, pend = pbeg + par_A->irrgPts[ir].nnz;
         calc_t tmp[dof], tmp2[dof];
-        #pragma GCC unroll 4
+        #pragma GCC unroll (4)
         for (idx_t f = 0; f < dof; f++)// tmp = -b
             tmp[f] = - b.irrgPts[ir].val[f];
         assert(par_A->irrgPts_ngb_ijk[(pend-1)*3] == -1);// 对角元位置
@@ -787,7 +787,7 @@ void PointGS<idx_t, data_t, setup_t, calc_t, dof>::BackwardPass(const   par_stru
             matvec_mla<idx_t, data_t, calc_t, dof>(dst_ptr, x_data + j*vec_dki_size + i*vec_dk_size +  k*dof, tmp);
         }// 此时 tmp = - b + L*x^{t} + U*x^{t}
         matvec_mul<idx_t, data_t, calc_t, dof>(invD_ptr, tmp, tmp2, - weight);// tmp2 = w*D^{-1}*(b - L*x^{t} - U*x^{t})
-        #pragma GCC unroll 4
+        #pragma GCC unroll (4)
         for (idx_t f = 0; f < dof; f++)
             x.irrgPts[ir].val[f] = (1.0 - weight) * x.irrgPts[ir].val[f] + tmp2[f];
     }

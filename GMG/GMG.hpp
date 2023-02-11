@@ -345,11 +345,11 @@ void GeometricMultiGrid<idx_t, data_t, setup_t, calc_t, dof>::Setup(const par_st
                     const idx_t lx = src_sqD.local_x, ly = src_sqD.local_y, lz = src_sqD.local_z,
                                 hx = src_sqD.halo_x , hy = src_sqD.halo_y , hz = src_sqD.halo_z ;
                     A_array_low[i]->sqrt_D = new seq_structVector<idx_t, calc_t, dof>(lx, ly, lz, hx, hy, hz);
-                    const idx_t tot_len = (lx + hx*2) * (ly + hy*2) * (lz + hz*2) * dof;
+                    const idx_t sqD_len = (lx + hx*2) * (ly + hy*2) * (lz + hz*2) * dof;
                     calc_t * dst_data = A_array_low[i]->sqrt_D->data;
                     #pragma omp parallel for schedule(static)
-                    for (idx_t i = 0; i < tot_len; i++)
-                        dst_data[i] = src_sqD.data[i];
+                    for (idx_t p = 0; p < sqD_len; p++)
+                        dst_data[p] = src_sqD.data[p];
                     A_array_low[i]->own_sqrt_D = true;
                 }
             // }

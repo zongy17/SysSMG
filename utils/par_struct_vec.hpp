@@ -317,7 +317,7 @@ void par_structVector<idx_t, data_t, dof>::set_val(const data_t val, bool halo_s
 
     // 非规则点
     for (idx_t ir = 0; ir < num_irrgPts; ir++)
-        #pragma GCC unroll 4
+        #pragma GCC unroll (4)
         for (idx_t f = 0; f < dof; f++)
             irrgPts[ir].val[f] = val;
 }
@@ -483,7 +483,7 @@ res_t vec_dot(par_structVector<idx_t, data_t, dof> const & x, par_structVector<i
     assert(x.num_irrgPts == y.num_irrgPts);
     for (idx_t ir = 0; ir < x.num_irrgPts; ir++) {
         assert(x.irrgPts[ir].gid == y.irrgPts[ir].gid);
-        #pragma GCC unroll 4
+        #pragma GCC unroll (4)
         for (idx_t f = 0; f < dof; f++)
             loc_prod += x.irrgPts[ir].val[f] * y.irrgPts[ir].val[f];
     }
@@ -516,7 +516,7 @@ void vec_add(const par_structVector<idx_t, data_t, dof> & v1, scalar_t alpha,
     assert(v1.num_irrgPts == v2.num_irrgPts && v1.num_irrgPts == v.num_irrgPts);
     for (idx_t ir = 0; ir < v1.num_irrgPts; ir++) {
         assert(v1.irrgPts[ir].gid == v2.irrgPts[ir].gid && v1.irrgPts[ir].gid == v.irrgPts[ir].gid);
-        #pragma GCC unroll 4
+        #pragma GCC unroll (4)
         for (idx_t f = 0; f < dof; f++)
             v.irrgPts[ir].val[f] = v1.irrgPts[ir].val[f] + alpha * v2.irrgPts[ir].val[f];
     }
@@ -534,7 +534,7 @@ void vec_copy(const par_structVector<idx_t, data_t, dof> & src, par_structVector
     assert(src.num_irrgPts == dst.num_irrgPts);
     for (idx_t ir = 0; ir < src.num_irrgPts; ir++) {
         assert(src.irrgPts[ir].gid == dst.irrgPts[ir].gid);
-        #pragma GCC unroll 4
+        #pragma GCC unroll (4)
         for (idx_t f = 0; f < dof; f++)
             dst.irrgPts[ir].val[f] = src.irrgPts[ir].val[f];
     }
@@ -550,7 +550,7 @@ void vec_mul_by_scalar(const scalar_t coeff, const par_structVector<idx_t, data_
     assert(src.num_irrgPts == dst.num_irrgPts);
     for (idx_t ir = 0; ir < src.num_irrgPts; ir++) {
         assert(src.irrgPts[ir].gid == dst.irrgPts[ir].gid);
-        #pragma GCC unroll 4
+        #pragma GCC unroll (4)
         for (idx_t f = 0; f < dof; f++)
             dst.irrgPts[ir].val[f] = coeff * src.irrgPts[ir].val[f];
     }
@@ -563,7 +563,7 @@ void vec_scale(const scalar_t coeff, par_structVector<idx_t, data_t, dof> & vec)
 
     // 非规则点
     for (idx_t ir = 0; ir < vec.num_irrgPts; ir++)
-        #pragma GCC unroll 4
+        #pragma GCC unroll (4)
         for (idx_t f = 0; f < dof; f++)
            vec.irrgPts[ir].val[f] *= coeff;
 }
