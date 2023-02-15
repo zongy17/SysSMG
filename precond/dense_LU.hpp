@@ -458,9 +458,9 @@ void DenseLU<idx_t, data_t, setup_t, calc_t, dof>::Setup()
             idx_t ngb_i = i + stencil_offset[d * 3 + 1];
             idx_t ngb_k = k + stencil_offset[d * 3 + 2];
             if (ngb_j < 0 || ngb_j >= gy || ngb_i < 0 || ngb_i >= gx || ngb_k < 0 || ngb_k >= gz) continue;
-            const data_t * buf_ptr = buf + (br * num_stencil + d) * dof*dof + f*dof;
+            const setup_t * buf_ptr = buf + (br * num_stencil + d) * dof*dof + f*dof;
             for (idx_t ngb_f = 0; ngb_f < dof; ngb_f++) {
-                data_t v = buf_ptr[ngb_f];
+                setup_t v = buf_ptr[ngb_f];
                 if (v != 0.0) {
                     idx_t col = ((ngb_j * gx + ngb_i) * gz + ngb_k) * dof + ngb_f;
                     col_idx[nnz_cnt] = col;

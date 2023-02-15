@@ -205,7 +205,7 @@ int main(int argc, char ** argv)
         if (strcmp(case_name.c_str(), "LASER" ) == 0) {
             assert(num_diag == 7);
             A->compress_LU();
-            if (prc_name == "GMG") {
+            if (prc_name == "GMG" && sizeof(PC_DATA_TYPE) == 2) {
                 ((GeometricMultiGrid<IDX_TYPE, PC_DATA_TYPE, KSP_TYPE, PC_CALC_TYPE>*)precond)->scale_before_setup_smoothers = true;
             }
         }
