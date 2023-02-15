@@ -257,13 +257,14 @@ public:
     const Operator<idx_t, setup_t, setup_t> * oper = nullptr;
     
     idx_t global_dof;
-    calc_t * u_data = nullptr, * l_data = nullptr;
-    calc_t * dense_x = nullptr, * dense_b = nullptr;// 用于前代回代的数据
+    double * u_data = nullptr, * l_data = nullptr;
+    calc_t * collect_vec = nullptr;
+    double * dense_x = nullptr, * dense_b = nullptr;// 用于前代回代的数据
     idx_t * sendrecv_cnt = nullptr, * displs = nullptr;
     MPI_Datatype vec_recv_type = MPI_DATATYPE_NULL, mat_recv_type = MPI_DATATYPE_NULL;// 接收者（只有0号进程需要）的数据类型
     MPI_Datatype mat_send_type = MPI_DATATYPE_NULL, vec_send_type = MPI_DATATYPE_NULL;// 发送者（各个进程都需要）的数据类型
 #ifndef USE_DENSE
-    CSR_sparseMat<idx_t, calc_t, calc_t> * glbA_csr = nullptr;
+    CSR_sparseMat<idx_t, double, double> * glbA_csr = nullptr;
 #endif
     DenseLU(DenseLU_type type) : Solver<idx_t, data_t, setup_t, calc_t>(), type(type) {
         if (type == DenseLU_3D7) {
@@ -293,6 +294,7 @@ public:
 #ifndef USE_DENSE
         if (glbA_csr != nullptr) {delete glbA_csr; glbA_csr = nullptr;}
 #endif
+        if (collect_vec != nullptr) {delete collect_vec; collect_vec = nullptr;}
     }
     void SetOperator(const Operator<idx_t, setup_t, setup_t> & op) {
         oper = & op;
@@ -368,8 +370,9 @@ void DenseLU<idx_t, data_t, setup_t, calc_t, dof>::Setup()
         // MPI_Abort(MPI_COMM_WORLD, -999);
     }
 
-    dense_x = new calc_t[global_dof];
-    dense_b = new calc_t[global_dof];
+    dense_x = new double[global_dof];
+    dense_b = new double[global_dof];
+    collect_vec = new calc_t [global_dof];
     setup_t * buf = new setup_t[gx * gy * gz * num_stencil * dof*dof];// 接收缓冲区：全局的稀疏结构化矩阵
 
     // 执行LU分解，并存储
@@ -444,7 +447,7 @@ void DenseLU<idx_t, data_t, setup_t, calc_t, dof>::Setup()
     // 将结构化排布的稀疏矩阵转成CSR
     idx_t * row_ptr = new idx_t [global_dof+1];
     idx_t * col_idx = new idx_t [global_dof * num_stencil * dof];// 按照最大的可能上限开辟
-    calc_t* vals    = new calc_t[global_dof * num_stencil * dof];// + 2是因为对角块不止3个非零元
+    double* vals    = new double[global_dof * num_stencil * dof];// + 2是因为对角块不止3个非零元
     int nnz_cnt = 0;
     row_ptr[0] = 0;// init
     for (idx_t j = 0; j < gy; j++)
@@ -473,16 +476,16 @@ void DenseLU<idx_t, data_t, setup_t, calc_t, dof>::Setup()
         }
         row_ptr[row+1] = nnz_cnt;
     }
-    glbA_csr = new CSR_sparseMat<idx_t, calc_t, calc_t>(global_dof, row_ptr, col_idx, vals);
+    glbA_csr = new CSR_sparseMat<idx_t, double, double>(global_dof, row_ptr, col_idx, vals);
     // glbA_csr->fprint_COO("sparseA.txt");
     setup_time += wall_time();
     double decomp_time = glbA_csr->decomp();
     setup_time += decomp_time;
     setup_time -= wall_time();
 #else
-    setup_t * dense_A = new setup_t[global_dof * global_dof];// 用于分解的稠密A矩阵
-    setup_t * L_high = new setup_t [global_dof * (global_dof - 1) / 2];
-    setup_t * U_high = new setup_t [global_dof * (global_dof + 1) / 2];
+    double * dense_A = new double[global_dof * global_dof];// 用于分解的稠密A矩阵
+    double * L_high = new double [global_dof * (global_dof - 1) / 2];
+    double * U_high = new double [global_dof * (global_dof + 1) / 2];
         // 将结构化排布的稀疏矩阵稠密化
         #pragma omp parallel for schedule(static)
         for (idx_t p = 0; p < global_dof * global_dof; p++)
@@ -502,7 +505,7 @@ void DenseLU<idx_t, data_t, setup_t, calc_t, dof>::Setup()
                 idx_t gr = start_row * dof + lr;// 全局行序号
                 for (idx_t lc = 0; lc < dof; lc++) {
                     idx_t gc = ((ngb_j * gx + ngb_i) * gz + ngb_k) * dof + lc;// 全局列序号
-                    dense_A[gr * global_dof + gc] = (calc_t) buf[(start_row * num_stencil + d) * dof*dof + lr*dof + lc];
+                    dense_A[gr * global_dof + gc] = buf[(start_row * num_stencil + d) * dof*dof + lr*dof + lc];
                 }
             }
         }
@@ -539,31 +542,31 @@ void DenseLU<idx_t, data_t, setup_t, calc_t, dof>::Setup()
     }
 #endif
 
-    if constexpr (sizeof(calc_t) == sizeof(setup_t)) {
-    // if constexpr (sizeof(calc_t) == sizeof(double)) {
-        l_data = L_high;
-        u_data = U_high;
-    } else {
-        if (my_pid == 0) {
-            printf("  \033[1;31mWarning\033[0m: LU::Setup() using setup_t of %ld bytes, but calc_t of %ld bytes\n",
-                sizeof(setup_t), sizeof(calc_t));
-        }
-        idx_t tot_len;
-        tot_len = global_dof * (global_dof - 1) / 2;
-        l_data = new calc_t [tot_len];
-        #pragma omp parallel for schedule(static)
-        for (idx_t i = 0; i < tot_len; i++)
-            l_data[i] = L_high[i];
-
-        tot_len = global_dof * (global_dof + 1) / 2;
-        u_data = new calc_t [tot_len];
-        #pragma omp parallel for schedule(static)
-        for (idx_t i = 0; i < tot_len; i++)
-            u_data[i] = U_high[i];
-        
-        delete L_high;
-        delete U_high;
-    }
+    // if constexpr (sizeof(calc_t) == sizeof(setup_t)) {
+    // // if constexpr (sizeof(calc_t) == sizeof(double)) {
+    //     l_data = L_high;
+    //     u_data = U_high;
+    // } else {
+    //     if (my_pid == 0) {
+    //         printf("  \033[1;31mWarning\033[0m: LU::Setup() using setup_t of %ld bytes, but calc_t of %ld bytes\n",
+    //             sizeof(setup_t), sizeof(calc_t));
+    //     }
+    //     idx_t tot_len;
+    //     tot_len = global_dof * (global_dof - 1) / 2;
+    //     l_data = new calc_t [tot_len];
+    //     #pragma omp parallel for schedule(static)
+    //     for (idx_t i = 0; i < tot_len; i++)
+    //         l_data[i] = L_high[i];
+    //     tot_len = global_dof * (global_dof + 1) / 2;
+    //     u_data = new calc_t [tot_len];
+    //     #pragma omp parallel for schedule(static)
+    //     for (idx_t i = 0; i < tot_len; i++)
+    //         u_data[i] = U_high[i];
+    //     delete L_high;
+    //     delete U_high;
+    // }
+    l_data = L_high;
+    u_data = U_high;
 #endif
     delete buf;
     setup_called = true;
@@ -584,12 +587,17 @@ void DenseLU<idx_t, data_t, setup_t, calc_t, dof>::Mult(const par_structVector<i
         const seq_structVector<idx_t, calc_t> & b = *(input.local_vector);
               seq_structVector<idx_t, calc_t> & x = *(output.local_vector);
 
+        MPI_Allgatherv(b.data, 1, vec_send_type, collect_vec, sendrecv_cnt, displs, vec_recv_type, input.comm_pkg->cart_comm);
 #ifdef USE_DENSE
-        MPI_Allgatherv(b.data, 1, vec_send_type, dense_x, sendrecv_cnt, displs, vec_recv_type, input.comm_pkg->cart_comm);
+        #pragma omp parallel for schedule(static)
+        for (idx_t i = 0; i < global_dof; i++)// 精度提升
+            dense_x[i] = collect_vec[i];
         dense_forward (l_data, dense_x, dense_b, global_dof, global_dof);// 前代
         dense_backward(u_data, dense_b, dense_x, global_dof, global_dof);// 回代
 #else
-        MPI_Allgatherv(b.data, 1, vec_send_type, dense_b, sendrecv_cnt, displs, vec_recv_type, input.comm_pkg->cart_comm);
+        #pragma omp parallel for schedule(static)// 精度提升
+        for (idx_t i = 0; i < global_dof; i++)
+            dense_b[i] = collect_vec[i];
         glbA_csr->apply(dense_b, dense_x);
 #endif
 
@@ -599,6 +607,7 @@ void DenseLU<idx_t, data_t, setup_t, calc_t, dof>::Mult(const par_structVector<i
             const idx_t lx = x.local_x           , ly = x.local_y           , lz = x.local_z           ;
             const idx_t hx = x.halo_x            , hy = x.halo_y            , hz = x.halo_z            ;
             const idx_t vec_dki_size = x.slice_dki_size, vec_dk_size = x.slice_dk_size;
+            #pragma omp parallel for collapse(3) schedule(static)
             for (idx_t j = 0; j < ly; j++)
             for (idx_t i = 0; i < lx; i++)
             for (idx_t k = 0; k < lz; k++) {
