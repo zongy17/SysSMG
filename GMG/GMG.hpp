@@ -313,17 +313,51 @@ void GeometricMultiGrid<idx_t, data_t, setup_t, calc_t, dof>::Setup(const par_st
                 gy = A_array_high[i]->local_matrix->local_y * num_procs[0]; // global_size_y
                 gz = A_array_high[i]->local_matrix->local_z * num_procs[2];
                 A_array_low[i] = new par_structMatrix<idx_t, data_t, calc_t, dof>(comm, A_array_high[i]->num_diag, gx, gy, gz, num_procs[1], num_procs[0], num_procs[2]);
-                const   seq_structMatrix<idx_t, setup_t, setup_t, dof> & src_h = *(A_array_high[i]->local_matrix);
-                        seq_structMatrix<idx_t, data_t, calc_t, dof> & dst_l = *(A_array_low [i]->local_matrix);
-                CHECK_LOCAL_HALO(src_h, dst_l);
-                idx_t tot_len = (src_h.local_x + src_h.halo_x * 2) * (src_h.local_y + src_h.halo_y * 2)
-                            *   (src_h.local_z + src_h.halo_z * 2) *  src_h.num_diag * src_h.elem_size;
-                #pragma omp parallel for schedule(static)
-                for (idx_t p = 0; p < tot_len; p++)
-                    dst_l.data[p] = (data_t) src_h.data[p];     
+                if (A_array_high[i]->LU_compressed) {// 只拷贝压缩后的L和U部分即可
+                    assert(A_array_low[i]->LU_compressed == false);
+                    A_array_low[i]->LU_compressed = true;
+                    const idx_t lx = A_array_high[i]->L_cprs->local_x, ly = A_array_high[i]->L_cprs->local_y, lz = A_array_high[i]->L_cprs->local_z,
+                                hx = A_array_high[i]->L_cprs->halo_x , hy = A_array_high[i]->L_cprs->halo_y , hz = A_array_high[i]->L_cprs->halo_z ;
+                    const idx_t L_cnt = A_array_high[i]->L_cprs->num_diag;// 这个L_cnt 等于 diag_id * dof
+                    A_array_low[i]->L_cprs = new seq_structMatrix<idx_t, data_t, calc_t, 1>(L_cnt, lx, ly, lz, hx, hy, hz); 
+                    {// L_cprs
+                        const idx_t tot_len = (lx + hx * 2) * (ly + hy * 2) * (lz + hz * 2) * L_cnt;
+                        const setup_t * src_data = A_array_high[i]->L_cprs->data;
+                        data_t * dst_data = A_array_low[i]->L_cprs->data;
+                        #pragma omp parallel for schedule(static)
+                        for (idx_t p = 0; p < tot_len; p++)
+                            dst_data[p] = src_data[p];
+                    }
+                    A_array_low[i]->U_cprs = new seq_structMatrix<idx_t, data_t, calc_t, 1>(*(A_array_low[i]->L_cprs));
+                    {// U_cprs
+                        const idx_t tot_len = (lx + hx * 2) * (ly + hy * 2) * (lz + hz * 2) * L_cnt;
+                        const setup_t * src_data = A_array_high[i]->U_cprs->data;
+                        data_t * dst_data = A_array_low[i]->U_cprs->data;
+                        #pragma omp parallel for schedule(static)
+                        for (idx_t p = 0; p < tot_len; p++)
+                            dst_data[p] = src_data[p];
+                    }
+                    A_array_low[i]->Diag = new seq_structVector<idx_t, data_t, dof*dof>(lx, ly, lz, hx, hy, hz);
+                    {// Diag
+                        const idx_t tot_len = (lx + hx * 2) * (ly + hy * 2) * (lz + hz * 2) * dof*dof;
+                        const setup_t * src_data = A_array_high[i]->Diag->data;
+                        data_t * dst_data = A_array_low[i]->Diag->data;
+                        #pragma omp parallel for schedule(static)
+                        for (idx_t p = 0; p < tot_len; p++)
+                            dst_data[p] = src_data[p];
+                    }
+                } else {// 全部都要拷贝
+                    const   seq_structMatrix<idx_t, setup_t, setup_t, dof> & src_h = *(A_array_high[i]->local_matrix);
+                            seq_structMatrix<idx_t, data_t, calc_t, dof> & dst_l = *(A_array_low [i]->local_matrix);
+                    CHECK_LOCAL_HALO(src_h, dst_l);
+                    idx_t tot_len = (src_h.local_x + src_h.halo_x * 2) * (src_h.local_y + src_h.halo_y * 2)
+                                *   (src_h.local_z + src_h.halo_z * 2) *  src_h.num_diag * src_h.elem_size;
+                    #pragma omp parallel for schedule(static)
+                    for (idx_t p = 0; p < tot_len; p++)
+                        dst_l.data[p] = (data_t) src_h.data[p];
+                }
 
                 // 当SpMV需要转换精度时，换成SOA来
-                // A_array_low[i]->separate_Diags();
                 if (A_array_high[i]->scaled) {// copy & truncate sqrt_D
                     A_array_low[i]->scaled = A_array_high[i]->scaled;
                     const seq_structVector<idx_t, setup_t, dof> & src_sqD = *(A_array_high[i]->sqrt_D);

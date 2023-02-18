@@ -23,7 +23,7 @@ void AOS_spmv_3d_Cal32Stg16(const int num,
     if constexpr (dof == 3) {
         float16x4x3_t   A0_2_16;
         float32x4_t c0, c1, c2;
-        int k = 0, max_3k = num & (~2);
+        int k = 0, max_3k = (num / 3) * 3;
         constexpr int mat_prft = elms * num_diag;
         for ( ; k < max_3k; k += 3) {
             const __fp16 * aos_ptr = A_jik;
@@ -91,7 +91,7 @@ void AOS_spmv_3d_scaled_Cal32Stg16(const int num,
     if constexpr (dof == 3) {
         float16x4x3_t   A0_2_16;
         float32x4_t c0, c1, c2;
-        int k = 0, max_3k = num & (~2);
+        int k = 0, max_3k = (num / 3) * 3;
         constexpr int mat_prft = elms * num_diag;
         for ( ; k < max_3k; k += 3) {
             const __fp16 * aos_ptr = A_jik;
