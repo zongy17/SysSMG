@@ -248,7 +248,7 @@ int main(int argc, char ** argv)
             const int kbeg = A->local_matrix->halo_z, kend = kbeg + A->local_matrix->local_z;
             const int nd = A->num_diag; assert(nd % 2 == 1);
             const int diag_id = (nd - 1) / 2;
-            const int dof = 3; assert(dof*dof == A->local_matrix->elem_size);
+            const int dof = NUM_DOF; assert(dof*dof == A->local_matrix->elem_size);
             int tot_nnz = 0;
             for (int j = jbeg; j < jend; j++)
             for (int i = ibeg; i < iend; i++)
